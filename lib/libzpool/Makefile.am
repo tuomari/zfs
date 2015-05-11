@@ -3,7 +3,8 @@ include $(top_srcdir)/config/Rules.am
 VPATH = \
 	$(top_srcdir)/module/zfs \
 	$(top_srcdir)/module/zcommon \
-	$(top_srcdir)/lib/libzpool
+	$(top_srcdir)/lib/libzpool \
+	$(top_srcdir)/module/zpios
 
 AM_CFLAGS += $(DEBUG_STACKFLAGS) $(FRAME_LARGER_THAN)
 
@@ -16,7 +17,28 @@ lib_LTLIBRARIES = libzpool.la
 USER_C = \
 	kernel.c \
 	taskq.c \
-	util.c
+	util.c \
+	abd.c \
+	vdev_disk.c \
+	zfs_acl.c \
+	zfs_ctldir.c \
+	zfs_dir.c \
+	zfs_ioctl.c \
+	zfs_log.c \
+	zfs_onexit.c \
+	zfs_replay.c \
+	zfs_rlock.c \
+	zfs_vfsops.c \
+	zfs_vnops.c \
+	zpl_ctldir.c \
+	zpl_export.c \
+	zpl_file.c \
+	zpl_inode.c \
+	zpl_super.c \
+	zpl_xattr.c \
+	zvol.c \
+	pios.c
+
 
 KERNEL_C = \
 	zfs_comutil.c \
@@ -121,4 +143,24 @@ libzpool_la_LIBADD = \
 libzpool_la_LIBADD += $(ZLIB)
 libzpool_la_LDFLAGS = -version-info 2:0:0
 
-EXTRA_DIST = $(USER_C)
+EXTRA_DIST = \
+	$(top_srcdir)/module/zfs/abd.c \
+	$(top_srcdir)/module/zfs/vdev_disk.c \
+	$(top_srcdir)/module/zfs/zfs_acl.c \
+	$(top_srcdir)/module/zfs/zfs_ctldir.c \
+	$(top_srcdir)/module/zfs/zfs_dir.c \
+	$(top_srcdir)/module/zfs/zfs_ioctl.c \
+	$(top_srcdir)/module/zfs/zfs_log.c \
+	$(top_srcdir)/module/zfs/zfs_onexit.c \
+	$(top_srcdir)/module/zfs/zfs_replay.c \
+	$(top_srcdir)/module/zfs/zfs_rlock.c \
+	$(top_srcdir)/module/zfs/zfs_vfsops.c \
+	$(top_srcdir)/module/zfs/zfs_vnops.c \
+	$(top_srcdir)/module/zfs/zpl_ctldir.c \
+	$(top_srcdir)/module/zfs/zpl_export.c \
+	$(top_srcdir)/module/zfs/zpl_file.c \
+	$(top_srcdir)/module/zfs/zpl_inode.c \
+	$(top_srcdir)/module/zfs/zpl_super.c \
+	$(top_srcdir)/module/zfs/zpl_xattr.c \
+	$(top_srcdir)/module/zfs/zvol.c \
+	$(top_srcdir)/module/zpios/pios.c
