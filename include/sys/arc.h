@@ -106,6 +106,10 @@ typedef enum arc_flags
 	/* Flags specifying whether optional hdr struct fields are defined */
 	ARC_FLAG_HAS_L1HDR		= 1 << 17,
 	ARC_FLAG_HAS_L2HDR		= 1 << 18,
+
+	/* indicates that the buffer is scatter metadata */
+	ARC_FLAG_META_SCATTER		= 1 << 19,
+
 } arc_flags_t;
 
 struct arc_buf {
