@@ -458,8 +458,8 @@ vdev_raidz_map_alloc(zio_t *zio, uint64_t unit_shift, uint64_t dcols,
 	zio->io_vsd = rm;
 	zio->io_vsd_ops = &vdev_raidz_vsd_ops;
 
-	/* RAIDZ ops init */
-	vdev_raidz_math_get_ops(rm);
+	/* init RAIDZ parity ops */
+	rm->rm_ops = vdev_raidz_math_get_ops();
 
 	return (rm);
 }

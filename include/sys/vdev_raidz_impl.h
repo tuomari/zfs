@@ -89,13 +89,15 @@ typedef boolean_t	(*will_work_f)(void);
 typedef void		(*init_impl_f)(void);
 typedef void		(*fini_impl_f)(void);
 
+#define	RAIDZ_IMPL_NAME_MAX	(16)
+
 typedef struct raidz_impl_ops {
 	init_impl_f init;
 	fini_impl_f fini;
 	raidz_gen_f gen[RAIDZ_GEN_NUM];	/* Parity generate functions */
 	raidz_rec_f rec[RAIDZ_REC_NUM];	/* Data reconstruction functions */
 	will_work_f is_supported;	/* Support check function */
-	char *name;			/* Name of the implementation */
+	char name[RAIDZ_IMPL_NAME_MAX];	/* Name of the implementation */
 } raidz_impl_ops_t;
 
 typedef struct raidz_col {
@@ -227,11 +229,17 @@ impl ## _rec_ ## code(void *rmp, const int *tgtidx)			\
 	[RAIDZ_REC_PQR] = & impl ## _rec_pqr				\
 }
 
+#define	RAIDZ_IMPL_KSTAT_CNT	(2 * (RAIDZ_GEN_NUM + RAIDZ_REC_NUM))
 
 typedef struct raidz_impl_kstat {
-	kstat_named_t gen[RAIDZ_GEN_NUM];	/* gen method speed kiB/s */
-	kstat_named_t rec[RAIDZ_REC_NUM];	/* rec method speed kiB/s */
+	kstat_named_t gen[2 * RAIDZ_GEN_NUM];	/* gen method speed kiB/s */
+	kstat_named_t rec[2 * RAIDZ_REC_NUM];	/* rec method speed kiB/s */
 } raidz_impl_kstat_t;
+
+#define	RAIDZ_IMPL_GEN_ID(ks, fn)	(ks)->gen[2 * (fn)].value.ui64
+#define	RAIDZ_IMPL_GEN_BW(ks, fn)	(ks)->gen[2 * (fn) + 1].value.ui64
+#define	RAIDZ_IMPL_REC_ID(ks, fn)	(ks)->rec[2 * (fn)].value.ui64
+#define	RAIDZ_IMPL_REC_BW(ks, fn)	(ks)->rec[2 * (fn) + 1].value.ui64
 
 /*
  * Enumerate various multiplication constants

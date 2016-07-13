@@ -54,13 +54,10 @@ static enum vdev_raidz_impl_sel {
 	IMPL_ORIGINAL	= -2,
 	IMPL_CYCLE	= -3,
 	IMPL_SCALAR	=  0,
-} zfs_vdev_raidz_impl = IMPL_SCALAR;
+} zfs_vdev_raidz_impl = IMPL_SCALAR, user_sel_impl = IMPL_FASTEST;
 
-/* selected implementation and its lock */
+/* selected implementation lock */
 static krwlock_t vdev_raidz_impl_lock;
-static raidz_impl_ops_t *vdev_raidz_used_impl =
-	(raidz_impl_ops_t *) &vdev_raidz_scalar_impl;
-static boolean_t vdev_raidz_impl_user_set = B_FALSE;
 
 /* RAIDZ op that contain the fastest routines */
 static raidz_impl_ops_t vdev_raidz_fastest_impl = {
@@ -75,10 +72,10 @@ raidz_impl_ops_t *raidz_supp_impl[ARRAY_SIZE(raidz_all_maths) + 1] = {
 };
 
 /*
- * kstats values for supported impl & original methods
+ * kstats values for supported impl + original and fastest methods
  * Values represent per disk throughput of 8 disk+parity raidz vdev (Bps)
  */
-static raidz_impl_kstat_t raidz_impl_kstats[ARRAY_SIZE(raidz_all_maths) + 1];
+static raidz_impl_kstat_t raidz_impl_kstats[ARRAY_SIZE(raidz_all_maths) + 2];
 
 /* kstat for benchmarked implementations */
 static kstat_t *raidz_math_kstat = NULL;
@@ -87,27 +84,48 @@ static kstat_t *raidz_math_kstat = NULL;
  * Selects the raidz operation for raidz_map
  * If rm_ops is set to NULL original raidz implementation will be used
  */
-void
-vdev_raidz_math_get_ops(raidz_map_t *rm)
+raidz_impl_ops_t *
+vdev_raidz_math_get_ops()
 {
+	raidz_impl_ops_t *ops = NULL;
+
 	rw_enter(&vdev_raidz_impl_lock, RW_READER);
 
-	rm->rm_ops = vdev_raidz_used_impl;
-
+	switch (zfs_vdev_raidz_impl) {
+	case IMPL_FASTEST:
+		ASSERT(raidz_math_initialized);
+		ops = &vdev_raidz_fastest_impl;
+		break;
+	case IMPL_ORIGINAL:
+		ops = NULL;
+		break;
 #if !defined(_KERNEL)
-	if (zfs_vdev_raidz_impl == IMPL_CYCLE) {
-		static size_t cycle_impl_idx = 0;
-		size_t idx;
+	case IMPL_CYCLE:
+	{
 		/*
-		 * Cycle through all supported new implementations, and
-		 * when idx == raidz_supp_impl_cnt, use the original
+		 * Cycle through all supported implementations
+		 * note: raidz_supp_impl[raidz_supp_impl_cnt] == NULL, in which
+		 * case the original implementation is used
 		 */
-		idx = (++cycle_impl_idx) % (raidz_supp_impl_cnt + 1);
-		rm->rm_ops = raidz_supp_impl[idx];
+		static size_t cycle_impl_idx = 0;
+		size_t idx = (++cycle_impl_idx) % (raidz_supp_impl_cnt + 1);
+		ops = raidz_supp_impl[idx];
 	}
+	break;
 #endif
+	case IMPL_SCALAR:
+		ops = (raidz_impl_ops_t *) &vdev_raidz_scalar_impl;
+		break;
+	default:
+		ASSERT3U(zfs_vdev_raidz_impl, >=, 0);
+		ASSERT3U(zfs_vdev_raidz_impl, <, raidz_supp_impl_cnt);
+		ops = raidz_supp_impl[zfs_vdev_raidz_impl];
+		break;
+	}
 
 	rw_exit(&vdev_raidz_impl_lock);
+
+	return (ops);
 }
 
 /*
@@ -242,29 +260,44 @@ const char *raidz_rec_name[] = {
 static void
 init_raidz_kstat(raidz_impl_kstat_t *rs, const char *name)
 {
+	static uint64_t id = 0;
+	char buf[KSTAT_STRLEN];
 	int i;
-	const size_t impl_name_len = strnlen(name, KSTAT_STRLEN);
-	const size_t op_name_max = (KSTAT_STRLEN - 2) > impl_name_len ?
-		KSTAT_STRLEN - impl_name_len - 2 : 0;
 
 	for (i = 0; i < RAIDZ_GEN_NUM; i++) {
-		strncpy(rs->gen[i].name, name, impl_name_len);
-		strncpy(rs->gen[i].name + impl_name_len, "_", 1);
-		strncpy(rs->gen[i].name + impl_name_len + 1,
-			raidz_gen_name[i], op_name_max);
+		strlcpy(buf, name, KSTAT_STRLEN);
+		strlcat(buf, "_", KSTAT_STRLEN);
+		strlcat(buf, raidz_gen_name[i], KSTAT_STRLEN);
 
-		rs->gen[i].data_type = KSTAT_DATA_UINT64;
-		rs->gen[i].value.ui64  = 0;
+		/* method id */
+		strlcpy(rs->gen[2 * i].name, buf, KSTAT_STRLEN);
+		strlcat(rs->gen[2 * i].name, "_id", KSTAT_STRLEN);
+		rs->gen[2 * i].data_type = KSTAT_DATA_UINT64;
+		RAIDZ_IMPL_GEN_ID(rs, i) = id++;
+
+		/* method bw */
+		strlcpy(rs->gen[2 * i + 1].name, buf, KSTAT_STRLEN);
+		strlcat(rs->gen[2 * i + 1].name, "_bw", KSTAT_STRLEN);
+		rs->gen[2 * i + 1].data_type = KSTAT_DATA_UINT64;
+		RAIDZ_IMPL_GEN_BW(rs, i)  = 0;
 	}
 
 	for (i = 0; i < RAIDZ_REC_NUM; i++) {
-		strncpy(rs->rec[i].name, name, impl_name_len);
-		strncpy(rs->rec[i].name + impl_name_len, "_", 1);
-		strncpy(rs->rec[i].name + impl_name_len + 1,
-			raidz_rec_name[i], op_name_max);
+		strlcpy(buf, name, KSTAT_STRLEN);
+		strlcat(buf, "_", KSTAT_STRLEN);
+		strlcat(buf, raidz_rec_name[i], KSTAT_STRLEN);
 
-		rs->rec[i].data_type = KSTAT_DATA_UINT64;
-		rs->rec[i].value.ui64  = 0;
+		/* method id */
+		strlcpy(rs->rec[2 * i].name, buf, KSTAT_STRLEN);
+		strlcat(rs->rec[2 * i].name, "_id", KSTAT_STRLEN);
+		rs->rec[2 * i].data_type = KSTAT_DATA_UINT64;
+		RAIDZ_IMPL_REC_ID(rs, i) = id++;
+
+		/* method bw */
+		strlcpy(rs->rec[2 * i + 1].name, buf, KSTAT_STRLEN);
+		strlcat(rs->rec[2 * i + 1].name, "_bw", KSTAT_STRLEN);
+		rs->rec[2 * i + 1].data_type = KSTAT_DATA_UINT64;
+		RAIDZ_IMPL_REC_BW(rs, i)  = 0;
 	}
 }
 
@@ -310,12 +343,15 @@ benchmark_raidz_impl(raidz_map_t *bench_rm, const int fn, benchmark_fn bench_fn)
 	hrtime_t t_start, t_diff;
 	raidz_impl_ops_t *curr_impl;
 	int impl, i;
+	raidz_impl_kstat_t *fkstat = (raidz_impl_kstats +
+	    raidz_supp_impl_cnt + 1);
 
 	/*
 	 * Use the sentinel (NULL) from the end of raidz_supp_impl_cnt
 	 * to run "original" implementation (bench_rm->rm_ops = NULL)
 	 */
 	for (impl = 0; impl <= raidz_supp_impl_cnt; impl++) {
+		raidz_impl_kstat_t *ckstat = raidz_impl_kstats + impl;
 		/* set an implementation to benchmark */
 		curr_impl = raidz_supp_impl[impl];
 		bench_rm->rm_ops = curr_impl;
@@ -334,20 +370,27 @@ benchmark_raidz_impl(raidz_map_t *bench_rm, const int fn, benchmark_fn bench_fn)
 		speed /= (t_diff * BENCH_COLS);
 
 		if (bench_fn == benchmark_gen_impl)
-			raidz_impl_kstats[impl].gen[fn].value.ui64 = speed;
+			RAIDZ_IMPL_GEN_BW(ckstat, fn) = speed;
 		else
-			raidz_impl_kstats[impl].rec[fn].value.ui64 = speed;
+			RAIDZ_IMPL_REC_BW(ckstat, fn) = speed;
 
 		/* if curr_impl==NULL the original impl is benchmarked */
 		if (curr_impl != NULL && speed > best_speed) {
 			best_speed = speed;
 
-			if (bench_fn == benchmark_gen_impl)
+			if (bench_fn == benchmark_gen_impl) {
 				vdev_raidz_fastest_impl.gen[fn] =
 				    curr_impl->gen[fn];
-			else
+				RAIDZ_IMPL_GEN_ID(fkstat, fn) =
+				    RAIDZ_IMPL_GEN_ID(ckstat, fn);
+				RAIDZ_IMPL_GEN_BW(fkstat, fn) = speed;
+			} else {
 				vdev_raidz_fastest_impl.rec[fn] =
 				    curr_impl->rec[fn];
+				RAIDZ_IMPL_REC_ID(fkstat, fn) =
+				    RAIDZ_IMPL_REC_ID(ckstat, fn);
+				RAIDZ_IMPL_REC_BW(fkstat, fn) = speed;
+			}
 		}
 	}
 }
@@ -382,8 +425,11 @@ vdev_raidz_math_init(void)
 	raidz_supp_impl_cnt = c;	/* number of supported impl */
 	raidz_supp_impl[c] = NULL;	/* sentinel */
 
-	/* init kstat for original routines */
-	init_raidz_kstat(&(raidz_impl_kstats[raidz_supp_impl_cnt]), "original");
+	/* init kstat for original and fastest routines */
+	init_raidz_kstat(&(raidz_impl_kstats[raidz_supp_impl_cnt]),
+	    "original");
+	init_raidz_kstat(&(raidz_impl_kstats[raidz_supp_impl_cnt + 1]),
+	    "fastest");
 
 #if !defined(_KERNEL)
 	/*
@@ -392,7 +438,7 @@ vdev_raidz_math_init(void)
 	memcpy(&vdev_raidz_fastest_impl, raidz_supp_impl[raidz_supp_impl_cnt-1],
 	    sizeof (vdev_raidz_fastest_impl));
 
-	vdev_raidz_fastest_impl.name = "fastest";
+	strcpy(vdev_raidz_fastest_impl.name, "fastest");
 
 	raidz_math_initialized = B_TRUE;
 
@@ -407,12 +453,13 @@ vdev_raidz_math_init(void)
 	bench_zio->io_size = BENCH_ZIO_SIZE; /* only data columns */
 	bench_zio->io_data = zio_data_buf_alloc(BENCH_ZIO_SIZE);
 	VERIFY(bench_zio->io_data);
+	memset(bench_zio->io_data, 0xAA, BENCH_ZIO_SIZE); /* warm up */
 
 	/* Benchmark parity generation methods */
 	for (fn = 0; fn < RAIDZ_GEN_NUM; fn++) {
 		bench_parity = fn + 1;
 		/* New raidz_map is needed for each generate_p/q/r */
-		bench_rm = vdev_raidz_map_alloc(bench_zio, 9,
+		bench_rm = vdev_raidz_map_alloc(bench_zio, SPA_MINBLOCKSHIFT,
 		    BENCH_D_COLS + bench_parity, bench_parity);
 
 		benchmark_raidz_impl(bench_rm, fn, benchmark_gen_impl);
@@ -421,7 +468,8 @@ vdev_raidz_math_init(void)
 	}
 
 	/* Benchmark data reconstruction methods */
-	bench_rm = vdev_raidz_map_alloc(bench_zio, 9, BENCH_COLS, PARITY_PQR);
+	bench_rm = vdev_raidz_map_alloc(bench_zio, SPA_MINBLOCKSHIFT,
+	    BENCH_COLS, PARITY_PQR);
 
 	for (fn = 0; fn < RAIDZ_REC_NUM; fn++)
 		benchmark_raidz_impl(bench_rm, fn, benchmark_rec_impl);
@@ -435,8 +483,8 @@ vdev_raidz_math_init(void)
 	/* install kstats for all impl */
 	raidz_math_kstat = kstat_create("zfs", 0, "vdev_raidz_bench",
 		"misc", KSTAT_TYPE_NAMED,
-		sizeof (raidz_impl_kstat_t) / sizeof (kstat_named_t) *
-		(raidz_supp_impl_cnt + 1), KSTAT_FLAG_VIRTUAL);
+		RAIDZ_IMPL_KSTAT_CNT * (raidz_supp_impl_cnt + 2),
+		KSTAT_FLAG_VIRTUAL);
 
 	if (raidz_math_kstat != NULL) {
 		raidz_math_kstat->ks_data = raidz_impl_kstats;
@@ -444,9 +492,8 @@ vdev_raidz_math_init(void)
 	}
 
 	/* Finish initialization */
+	zfs_vdev_raidz_impl = user_sel_impl;
 	raidz_math_initialized = B_TRUE;
-	if (!vdev_raidz_impl_user_set)
-		VERIFY0(vdev_raidz_impl_set("fastest"));
 }
 
 void
@@ -471,22 +518,27 @@ vdev_raidz_math_fini(void)
 	}
 }
 
-static const
-struct {
+static const struct {
 	char *name;
-	raidz_impl_ops_t *impl;
 	enum vdev_raidz_impl_sel sel;
 } math_impl_opts[] = {
-		{ "fastest",  &vdev_raidz_fastest_impl, IMPL_FASTEST },
-		{ "original", NULL, IMPL_ORIGINAL },
 #if !defined(_KERNEL)
-		{ "cycle",    NULL, IMPL_CYCLE },
+		{ "cycle", IMPL_CYCLE },
 #endif
+		{ "fastest", IMPL_FASTEST },
+		{ "original", IMPL_ORIGINAL },
+		{ "scalar", IMPL_SCALAR }
 };
 
 /*
  * Function sets desired raidz implementation.
- * If called after module_init(), vdev_raidz_impl_lock must be held for writing.
+ *
+ * Implementation lock is acquired only if we are called after
+ * vdev_raidz_math_init(): by using vdev_raidz_impl_set() API, or by writing to
+ * module parameter file. Otherwise, if parameter is specified on module load,
+ * we are called before _init() when locks are not yet initialized.
+ * Parameter trailing whitespace is stripped to allow usage of commands that
+ * can add newline to parameter string.
  *
  * @val		Name of raidz implementation to use
  * @param	Unused.
@@ -494,42 +546,62 @@ struct {
 static int
 zfs_vdev_raidz_impl_set(const char *val, struct kernel_param *kp)
 {
+	int err = -EINVAL;
+	char req_name[RAIDZ_IMPL_NAME_MAX];
+	boolean_t locked = B_FALSE;
 	size_t i;
+
+	/* sanitize input */
+	i = strnlen(val, RAIDZ_IMPL_NAME_MAX);
+	if (i == 0 || i == RAIDZ_IMPL_NAME_MAX)
+		return (err);
+
+	strlcpy(req_name, val, RAIDZ_IMPL_NAME_MAX);
+	while (i > 0 && !!isspace(req_name[i-1]))
+		i--;
+	req_name[i] = '\0';
+
+	/* check if lock is initialized */
+	if (raidz_math_initialized) {
+		rw_enter(&vdev_raidz_impl_lock, RW_WRITER);
+		locked = B_TRUE;
+	}
 
 	/* Check mandatory options */
 	for (i = 0; i < ARRAY_SIZE(math_impl_opts); i++) {
-		if (strcmp(val, math_impl_opts[i].name) == 0) {
-			zfs_vdev_raidz_impl = math_impl_opts[i].sel;
-			vdev_raidz_used_impl = math_impl_opts[i].impl;
-			vdev_raidz_impl_user_set = B_TRUE;
-			return (0);
+		if (strcmp(req_name, math_impl_opts[i].name) == 0) {
+			user_sel_impl = math_impl_opts[i].sel;
+			err = 0;
+			break;
 		}
 	}
 
-	/* check all supported implementations */
-	for (i = 0; i < raidz_supp_impl_cnt; i++) {
-		if (strcmp(val, raidz_supp_impl[i]->name) == 0) {
-			zfs_vdev_raidz_impl = i;
-			vdev_raidz_used_impl = raidz_supp_impl[i];
-			vdev_raidz_impl_user_set = B_TRUE;
-			return (0);
+	/* check all supported impl if init() was already called */
+	if (err != 0 && locked) {
+		/* check all supported implementations */
+		for (i = 0; i < raidz_supp_impl_cnt; i++) {
+			if (strcmp(req_name, raidz_supp_impl[i]->name) == 0) {
+				user_sel_impl = i;
+				err = 0;
+				break;
+			}
 		}
 	}
 
-	return (-EINVAL);
+	if (locked) {
+		zfs_vdev_raidz_impl = user_sel_impl;
+		rw_exit(&vdev_raidz_impl_lock);
+	}
+
+	return (err);
 }
 
 int
 vdev_raidz_impl_set(const char *val)
 {
-	int err;
-
 	ASSERT(raidz_math_initialized);
 
-	rw_enter(&vdev_raidz_impl_lock, RW_WRITER);
-	err = zfs_vdev_raidz_impl_set(val, NULL);
-	rw_exit(&vdev_raidz_impl_lock);
-	return (err);
+	return (zfs_vdev_raidz_impl_set(val, NULL));
 }
 
 #if defined(_KERNEL) && defined(HAVE_SPL)
@@ -544,7 +616,7 @@ zfs_vdev_raidz_impl_get(char *buffer, struct kernel_param *kp)
 	rw_enter(&vdev_raidz_impl_lock, RW_READER);
 
 	/* list mandatory options */
-	for (i = 0; i < ARRAY_SIZE(math_impl_opts); i++) {
+	for (i = 0; i < ARRAY_SIZE(math_impl_opts) - 1; i++) {
 		if (math_impl_opts[i].sel == zfs_vdev_raidz_impl)
 			fmt = "[%s] ";
 		else
