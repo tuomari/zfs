@@ -1964,6 +1964,8 @@ zpool_trim(zpool_handle_t *zhp, boolean_t start, uint64_t rate)
 	if (zfs_ioctl(hdl, ZFS_IOC_POOL_TRIM, &zc) == 0)
 		return (0);
 
+	(void) snprintf(msg, sizeof (msg),
+	    dgettext(TEXT_DOMAIN, "cannot trim %s"), zc.zc_name);
 	return (zpool_standard_error(hdl, errno, msg));
 }
 
