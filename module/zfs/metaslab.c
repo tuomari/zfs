@@ -3740,11 +3740,9 @@ metaslab_trim_remove(void *arg, uint64_t offset, uint64_t size)
 {
 	metaslab_t *msp = arg;
 
-	range_tree_remove_overlap(msp->ms_cur_ts->ts_tree, offset, size);
-	if (msp->ms_prev_ts != NULL) {
-		range_tree_remove_overlap(msp->ms_prev_ts->ts_tree, offset,
-		    size);
-	}
+	range_tree_clear(msp->ms_cur_ts->ts_tree, offset, size);
+	if (msp->ms_prev_ts != NULL)
+		range_tree_clear(msp->ms_prev_ts->ts_tree, offset, size);
 }
 
 /*
@@ -3881,8 +3879,8 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts)
 	if (msp->ms_loaded) {
 		for (range_seg_t *rs = avl_first(&trim_tree->rt_root);
 		    rs != NULL; rs = AVL_NEXT(&trim_tree->rt_root, rs)) {
-			if (!range_tree_contains(msp->ms_tree, rs->rs_start,
-			    rs->rs_end - rs->rs_start)) {
+			if (!range_tree_contains_part(msp->ms_tree,
+			    rs->rs_start, rs->rs_end - rs->rs_start)) {
 				panic("trimming allocated region; rs=%p",
 				    (void*)rs);
 			}
