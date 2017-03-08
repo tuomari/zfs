@@ -493,6 +493,9 @@ vdev_mirror_io_done(zio_t *zio)
 	int good_copies = 0;
 	int unexpected_errors = 0;
 
+	if (ZIO_IS_TRIM(zio))
+		return;
+
 	for (c = 0; c < mm->mm_children; c++) {
 		mc = &mm->mm_child[c];
 

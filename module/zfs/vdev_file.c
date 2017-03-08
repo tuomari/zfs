@@ -230,7 +230,7 @@ vdev_file_io_start(zio_t *zio)
 
 		case DKIOCFREE:
 		{
-			dkioc_free_list_t *dfl = zio->io_private;
+			const dkioc_free_list_t *dfl = zio->io_dfl;
 
 			ASSERT(dfl != NULL);
 			for (int i = 0; i < dfl->dfl_num_exts; i++) {

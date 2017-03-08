@@ -695,6 +695,10 @@ zio_destroy(zio_t *zio)
 	list_destroy(&zio->io_child_list);
 	mutex_destroy(&zio->io_lock);
 	cv_destroy(&zio->io_cv);
+	if (zio->io_dfl != NULL && zio->io_dfl_free_on_destroy)
+		dfl_free(zio->io_dfl);
+	else
+		ASSERT0(zio->io_dfl_free_on_destroy);
 	kmem_cache_free(zio_cache, zio);
 }
 
@@ -991,10 +995,9 @@ zio_claim(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 	return (zio);
 }
 
-static zio_t *
-zio_ioctl_with_pipeline(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
-    zio_done_func_t *done, void *private, enum zio_flag flags,
-    enum zio_stage pipeline)
+zio_t *
+zio_ioctl(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
+    zio_done_func_t *done, void *private, enum zio_flag flags)
 {
 	zio_t *zio;
 	int c;
@@ -1002,50 +1005,89 @@ zio_ioctl_with_pipeline(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
 	if (vd->vdev_children == 0) {
 		zio = zio_create(pio, spa, 0, NULL, NULL, 0, 0, done, private,
 		    ZIO_TYPE_IOCTL, ZIO_PRIORITY_NOW, flags, vd, 0, NULL,
-		    ZIO_STAGE_OPEN, pipeline);
+		    ZIO_STAGE_OPEN, ZIO_IOCTL_PIPELINE);
 
 		zio->io_cmd = cmd;
 	} else {
-		zio = zio_null(pio, spa, vd, done, private, flags);
+		zio = zio_null(pio, spa, NULL, NULL, NULL, flags);
+
+		for (c = 0; c < vd->vdev_children; c++)
+			zio_nowait(zio_ioctl(zio, spa, vd->vdev_child[c], cmd,
+			    done, private, flags));
+	}
+
+	return (zio);
+}
+
+/*
+ * Performs the same function as zio_trim_tree, but takes a dkioc_free_list_t
+ * instead of a range tree of extents. The `dfl' argument is stored in the
+ * zio and shouldn't be altered by the caller after calling zio_trim_dfl.
+ * If `dfl_free_on_destroy' is true, the zio will destroy and free the list
+ * using dfl_free after the zio is done executing.
+ */
+zio_t *
+zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
+    boolean_t dfl_free_on_destroy, zio_done_func_t *done, void *private)
+{
+	zio_t *zio;
+	int c;
+
+	ASSERT(dfl->dfl_num_exts != 0);
+
+	if (vd->vdev_ops->vdev_op_leaf) {
 		/*
-		 * DKIOCFREE ioctl's need some special handling on interior
-		 * vdevs. If the device provides an ops function to handle
-		 * recomputing dkioc_free extents, then we call it.
-		 * Otherwise the default behavior applies, which simply fans
-		 * out the ioctl to all component vdevs.
+		 * A trim zio is a special ioctl zio that can enter the vdev
+		 * queue. We don't want to be sorted in the queue by offset,
+		 * but sometimes the queue requires that, so we fake an
+		 * offset value. We simply use the offset of the first extent
+		 * and the minimum allocation unit on the vdev to keep the
+		 * queue's algorithms working more-or-less as they should.
 		 */
-		if (cmd == DKIOCFREE && vd->vdev_ops->vdev_op_trim != NULL) {
-			vd->vdev_ops->vdev_op_trim(vd, zio, private);
+		uint64_t off = dfl->dfl_exts[0].dfle_start;
+
+		zio = zio_create(pio, spa, 0, NULL, NULL, 1 << vd->vdev_ashift,
+		    1 << vd->vdev_ashift, done, private, ZIO_TYPE_IOCTL,
+		    ZIO_PRIORITY_TRIM, ZIO_FLAG_CANFAIL | ZIO_FLAG_DONT_RETRY |
+		    ZIO_FLAG_DONT_PROPAGATE | ZIO_FLAG_DONT_AGGREGATE, vd, off,
+		    NULL, ZIO_STAGE_OPEN, ZIO_TRIM_PIPELINE);
+		zio->io_cmd = DKIOCFREE;
+		zio->io_dfl = dfl;
+		zio->io_dfl_free_on_destroy = dfl_free_on_destroy;
+	} else {
+		/*
+		 * Trims to non-leaf vdevs have two possible paths. For vdevs
+		 * that do not provide a specific trim fanout handler, we
+		 * simply duplicate the trim to each child. vdevs which do
+		 * have a trim fanout handler are responsible for doing the
+		 * fanout themselves.
+		 */
+		zio = zio_null(pio, spa, vd, done, private, 0);
+		zio->io_dfl = dfl;
+		zio->io_dfl_free_on_destroy = B_TRUE;
+
+		if (vd->vdev_ops->vdev_op_trim != NULL) {
+			vd->vdev_ops->vdev_op_trim(vd, zio, dfl);
 		} else {
-			for (c = 0; c < vd->vdev_children; c++)
-				zio_nowait(zio_ioctl_with_pipeline(zio,
-				    spa, vd->vdev_child[c], cmd, NULL,
-				    private, flags, pipeline));
+			for (c = 0; c < vd->vdev_children; c++) {
+				zio_nowait(zio_trim_dfl(zio, spa,
+				    vd->vdev_child[c], dfl, B_FALSE,
+				    NULL, NULL));
+			}
 		}
 	}
 
 	return (zio);
 }
 
-zio_t *
-zio_ioctl(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
-    zio_done_func_t *done, void *private, enum zio_flag flags)
-{
-	return (zio_ioctl_with_pipeline(pio, spa, vd, cmd, done,
-	    private, flags, ZIO_IOCTL_PIPELINE));
-}
-
 /*
- * Callback for when a trim zio has completed. This simply frees the
- * dkioc_free_list_t extent list of the DKIOCFREE ioctl.
+ * This check is used by zio_trim_tree to set in dfl_ck_func to help debugging
+ * extent trimming. If the SCSI driver (sd) was compiled with the DEBUG flag
+ * set, dfl_ck_func is called for every extent to verify that it is indeed
+ * ok to be trimmed. This function compares the extent address with the tree
+ * of free blocks (ms_tree) in the metaslab which this trim was originally
+ * part of.
  */
-static void
-zio_trim_done(zio_t *zio)
-{
-	VERIFY(zio->io_private != NULL);
-	dfl_free(zio->io_private);
-}
-
 static void
 zio_trim_check(uint64_t start, uint64_t len, void *msp)
 {
@@ -1054,8 +1096,9 @@ zio_trim_check(uint64_t start, uint64_t len, void *msp)
 	if (!held)
 		mutex_enter(&ms->ms_lock);
 	ASSERT(ms->ms_trimming_ts != NULL);
-	ASSERT(range_tree_contains(ms->ms_trimming_ts->ts_tree,
-	    start - VDEV_LABEL_START_SIZE, len));
+	if (ms->ms_loaded)
+		ASSERT(range_tree_contains(ms->ms_trimming_ts->ts_tree,
+		    start - VDEV_LABEL_START_SIZE, len));
 	if (!held)
 		mutex_exit(&ms->ms_lock);
 }
@@ -1065,32 +1108,29 @@ zio_trim_check(uint64_t start, uint64_t len, void *msp)
  * space associated with these extents can be released.
  * This is used by flash storage to pre-erase blocks for rapid reuse later
  * and thin-provisioned block storage to reclaim unused blocks.
+ * This function is actually a front-end to zio_trim_dfl. It simply converts
+ * the provided range_tree's contents into a dkioc_free_list_t and calls
+ * zio_trim_dfl with it. The `tree' argument is not used after this function
+ * returns and can be discarded by the caller.
  */
 zio_t *
-zio_trim(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
-    zio_done_func_t *done, void *private, enum zio_flag flags,
-    int trim_flags, metaslab_t *msp)
+zio_trim_tree(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
+    zio_done_func_t *done, void *private, int dkiocfree_flags, metaslab_t *msp)
 {
 	dkioc_free_list_t *dfl = NULL;
 	range_seg_t *rs;
 	uint64_t rs_idx;
 	uint64_t num_exts;
 	uint64_t bytes_issued = 0, bytes_skipped = 0, exts_skipped = 0;
-	/*
-	 * We need this to invoke the caller's `done' callback with the
-	 * correct io_private (not the dkioc_free_list_t, which is needed
-	 * by the underlying DKIOCFREE ioctl).
-	 */
-	zio_t *sub_pio = zio_null(pio, spa, vd, done, private, flags);
 
 	ASSERT(range_tree_space(tree) != 0);
 
 	if (!zfs_trim)
-		return (sub_pio);
+		return (zio_null(pio, spa, vd, done, private, 0));
 
 	num_exts = avl_numnodes(&tree->rt_root);
 	dfl = dfl_alloc(num_exts, KM_SLEEP);
-	dfl->dfl_flags = trim_flags;
+	dfl->dfl_flags = dkiocfree_flags;
 	dfl->dfl_num_exts = num_exts;
 	dfl->dfl_offset = VDEV_LABEL_START_SIZE;
 	if (msp) {
@@ -1102,6 +1142,7 @@ zio_trim(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
 	    rs = AVL_NEXT(&tree->rt_root, rs)) {
 		uint64_t len = rs->rs_end - rs->rs_start;
 
+		/* Skip extents that are too short to bother with. */
 		if (len < zfs_trim_min_ext_sz) {
 			bytes_skipped += len;
 			exts_skipped++;
@@ -1126,6 +1167,11 @@ zio_trim(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
 
 	/* the zfs_trim_min_ext_sz filter may have shortened the list */
 	if (dfl->dfl_num_exts != rs_idx) {
+		if (rs_idx == 0) {
+			/* Removing short extents has removed all extents. */
+			dfl_free(dfl);
+			return (zio_null(pio, spa, vd, done, private, 0));
+		}
 		dkioc_free_list_t *dfl2 = dfl_alloc(rs_idx, KM_SLEEP);
 		bcopy(dfl, dfl2, DFL_SZ(rs_idx));
 		dfl2->dfl_num_exts = rs_idx;
@@ -1133,10 +1179,7 @@ zio_trim(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
 		dfl = dfl2;
 	}
 
-	zio_nowait(zio_ioctl_with_pipeline(sub_pio, spa, vd, DKIOCFREE,
-	    zio_trim_done, dfl, ZIO_FLAG_CANFAIL | ZIO_FLAG_DONT_PROPAGATE |
-	    ZIO_FLAG_DONT_RETRY, ZIO_TRIM_PIPELINE));
-	return (sub_pio);
+	return (zio_trim_dfl(pio, spa, vd, dfl, B_TRUE, done, private));
 }
 
 zio_t *
@@ -3400,7 +3443,8 @@ zio_vdev_io_start(zio_t *zio)
 	}
 
 	if (vd->vdev_ops->vdev_op_leaf &&
-	    (zio->io_type == ZIO_TYPE_READ || zio->io_type == ZIO_TYPE_WRITE)) {
+	    (zio->io_type == ZIO_TYPE_READ || zio->io_type == ZIO_TYPE_WRITE ||
+	    ZIO_IS_TRIM(zio))) {
 
 		if (zio->io_type == ZIO_TYPE_READ && vdev_cache_read(zio))
 			return (ZIO_PIPELINE_CONTINUE);
@@ -3430,7 +3474,8 @@ zio_vdev_io_done(zio_t *zio)
 	if (zio_wait_for_children(zio, ZIO_CHILD_VDEV, ZIO_WAIT_DONE))
 		return (ZIO_PIPELINE_STOP);
 
-	ASSERT(zio->io_type == ZIO_TYPE_READ || zio->io_type == ZIO_TYPE_WRITE);
+	ASSERT(zio->io_type == ZIO_TYPE_READ ||
+	    zio->io_type == ZIO_TYPE_WRITE || ZIO_IS_TRIM(zio));
 
 	if (zio->io_delay)
 		zio->io_delay = gethrtime() - zio->io_delay;

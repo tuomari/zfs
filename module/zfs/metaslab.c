@@ -3913,21 +3913,22 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts)
 			ASSERT3U(range_tree_space(sub_trim_tree), <=,
 			    max_bytes);
 			if (range_tree_space(sub_trim_tree) == max_bytes) {
-				zio_nowait(zio_trim(pio, spa, vd, sub_trim_tree,
-				    NULL, NULL, trim_flags, 0, msp));
+				zio_nowait(zio_trim_tree(pio, spa, vd,
+				    sub_trim_tree, NULL, NULL, trim_flags,
+				    msp));
 				range_tree_vacate(sub_trim_tree, NULL, NULL);
 			}
 			start = end;
 		}
 		if (range_tree_space(sub_trim_tree) != 0) {
-			zio_nowait(zio_trim(pio, spa, vd, sub_trim_tree,
-			    NULL, NULL, trim_flags, 0, msp));
+			zio_nowait(zio_trim_tree(pio, spa, vd, sub_trim_tree,
+			    NULL, NULL, trim_flags, msp));
 			range_tree_vacate(sub_trim_tree, NULL, NULL);
 		}
 		range_tree_destroy(sub_trim_tree);
 	} else {
-		zio_nowait(zio_trim(pio, spa, vd, trim_tree,
-		    NULL, NULL, trim_flags, 0, msp));
+		zio_nowait(zio_trim_tree(pio, spa, vd, trim_tree,
+		    NULL, NULL, trim_flags, msp));
 	}
 
 	return (pio);

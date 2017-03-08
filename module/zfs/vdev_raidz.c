@@ -132,8 +132,6 @@
 	VDEV_RAIDZ_64MUL_2((x), mask); \
 }
 
-static void vdev_raidz_trim_done(zio_t *zio);
-
 void
 vdev_raidz_map_free(raidz_map_t *rm)
 {
@@ -2079,6 +2077,9 @@ vdev_raidz_io_done(zio_t *zio)
 	int tgts[VDEV_RAIDZ_MAXPARITY];
 	int code;
 
+	if (ZIO_IS_TRIM(zio))
+		return;
+
 	ASSERT(zio->io_bp != NULL);  /* XXX need to add code to enforce this */
 
 	ASSERT(rm->rm_missingparity <= rm->rm_firstdatacol);
@@ -2356,12 +2357,15 @@ vdev_raidz_trim_append_rc(dkioc_free_list_t *dfl, uint64_t *num_extsp,
 }
 
 /*
- * Processes a trim for a raidz vdev.
+ * Processes a trim for a raidz vdev. Because trims deal with physical
+ * addresses, we can't simply pass through our logical vdev addresses to
+ * the underlying devices. Instead, we compute a raidz map based on the
+ * logical extent addresses provided to us and construct new extent
+ * lists that then go to each component vdev.
  */
 static void
-vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
+vdev_raidz_trim(vdev_t *vd, zio_t *pio, dkioc_free_list_t *dfl)
 {
-	dkioc_free_list_t *dfl = trim_exts;
 	dkioc_free_list_t **sub_dfls;
 	uint64_t *sub_dfls_num_exts;
 	zio_t *zio;
@@ -2414,11 +2418,9 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	 */
 	for (int i = 0; i < vd->vdev_children; i++) {
 		if (sub_dfls_num_exts[i] != 0) {
-			zio_nowait(zio_ioctl(pio, vd->vdev_child[i]->vdev_spa,
-			    vd->vdev_child[i], DKIOCFREE,
-			    vdev_raidz_trim_done, sub_dfls[i],
-			    ZIO_FLAG_CANFAIL | ZIO_FLAG_DONT_PROPAGATE |
-			    ZIO_FLAG_DONT_RETRY));
+			vdev_t *child = vd->vdev_child[i];
+			zio_nowait(zio_trim_dfl(pio, child->vdev_spa, child,
+			    sub_dfls[i], B_TRUE, NULL, NULL));
 		} else {
 			dfl_free(sub_dfls[i]);
 		}
@@ -2426,17 +2428,6 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	kmem_free(sub_dfls, sizeof (*sub_dfls) * vd->vdev_children);
 	kmem_free(sub_dfls_num_exts, sizeof (uint64_t) * vd->vdev_children);
 	kmem_free(zio, sizeof (*zio));
-}
-
-/*
- * Releases a dkioc_free_list_t from ioctls issued to component devices in
- * vdev_raidz_dkioc_free.
- */
-static void
-vdev_raidz_trim_done(zio_t *zio)
-{
-	ASSERT(zio->io_private != NULL);
-	dfl_free(zio->io_private);
 }
 
 vdev_ops_t vdev_raidz_ops = {

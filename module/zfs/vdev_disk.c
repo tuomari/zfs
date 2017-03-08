@@ -719,10 +719,10 @@ vdev_disk_io_start(zio_t *zio)
 			}
 
 			/*
-			 * zio->io_private contains a dkioc_free_list_t
+			 * zio->io_dfl contains a dkioc_free_list_t
 			 * specifying which offsets are to be freed
 			 */
-			dfl = zio->io_private;
+			dfl = zio->io_dfl;
 			ASSERT(dfl != NULL);
 
 			for (int i = 0; i < dfl->dfl_num_exts; i++) {
