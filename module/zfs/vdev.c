@@ -3738,7 +3738,8 @@ vdev_man_trim(vdev_trim_info_t *vti)
 		spa_config_exit(spa, SCL_STATE_ALL, FTAG);
 
 		if (trim_io != NULL) {
-			vd->vdev_trim_prog = cursor;
+			ASSERT3U(cursor, >=, vd->vdev_ms[0]->ms_start);
+			vd->vdev_trim_prog = cursor - vd->vdev_ms[0]->ms_start;
 			(void) zio_wait(trim_io);
 		} else {
 			/*
