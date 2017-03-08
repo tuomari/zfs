@@ -123,7 +123,7 @@ static void zio_taskq_dispatch(zio_t *, zio_taskq_type_t, boolean_t);
  * underlying storage.
  */
 int zfs_trim = B_TRUE;
-int zfs_trim_min_ext_sz = 1 << 20;	/* 1 MB */
+int zfs_trim_min_ext_sz = 128 << 10;	/* 128k */
 
 void
 zio_init(void)
