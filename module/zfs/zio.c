@@ -1125,9 +1125,6 @@ zio_trim_tree(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
 
 	ASSERT(range_tree_space(tree) != 0);
 
-	if (!zfs_trim)
-		return (zio_null(pio, spa, vd, done, private, 0));
-
 	num_exts = avl_numnodes(&tree->rt_root);
 	dfl = dfl_alloc(num_exts, KM_SLEEP);
 	dfl->dfl_flags = dkiocfree_flags;

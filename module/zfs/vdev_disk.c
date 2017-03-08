@@ -705,11 +705,14 @@ vdev_disk_io_start(zio_t *zio)
 		{
 			dkioc_free_list_t *dfl;
 
+			if (!zfs_trim)
+				break;
+
 			/*
 			 * We perform device support checks here instead of
-			 * in zio_trim(), as zio_trim() might be invoked on
-			 * top of a top-level vdev, whereas vdev_disk_io_start
-			 * is guaranteed to be operating a leaf vdev.
+			 * in zio_trim_*(), as zio_trim_*() might be invoked
+			 * on a top-level vdev, whereas vdev_disk_io_start
+			 * is guaranteed to be operating a leaf disk vdev.
 			 */
 			if (v->vdev_notrim &&
 			    spa_get_force_trim(v->vdev_spa) !=

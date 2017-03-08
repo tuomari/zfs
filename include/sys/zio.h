@@ -230,6 +230,7 @@ typedef void zio_done_func_t(zio_t *zio);
 
 extern int zio_dva_throttle_enabled;
 extern const char *zio_type_name[ZIO_TYPES];
+extern int zfs_trim;
 
 struct range_tree;
 

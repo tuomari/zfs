@@ -233,6 +233,8 @@ vdev_file_io_start(zio_t *zio)
 			const dkioc_free_list_t *dfl = zio->io_dfl;
 
 			ASSERT(dfl != NULL);
+			if (!zfs_trim)
+				break;
 			for (int i = 0; i < dfl->dfl_num_exts; i++) {
 				struct flock flck;
 				int error;
