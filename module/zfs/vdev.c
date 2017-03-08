@@ -3722,6 +3722,7 @@ vdev_man_trim(vdev_trim_info_t *vti)
 	uint64_t cursor;
 	boolean_t was_loaded = B_FALSE;
 
+	vd->vdev_man_trimming = B_TRUE;
 	vd->vdev_trim_prog = 0;
 
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
@@ -3786,6 +3787,7 @@ out:
 	 * before processing all metaslabs.
 	 */
 	vd->vdev_trim_prog = vd->vdev_asize;
+	vd->vdev_man_trimming = B_FALSE;
 
 	ASSERT(vti->vti_done_cb != NULL);
 	vti->vti_done_cb(vti->vti_done_arg);

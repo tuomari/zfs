@@ -2490,7 +2490,8 @@ metaslab_sync_done(metaslab_t *msp, uint64_t txg)
 	 * defer_tree -- this is safe to do because we've just emptied out
 	 * the defer_tree.
 	 */
-	if (spa_get_auto_trim(spa) == SPA_AUTO_TRIM_ON)
+	if (spa_get_auto_trim(spa) == SPA_AUTO_TRIM_ON &&
+	    !vd->vdev_man_trimming)
 		range_tree_walk(*defer_tree, metaslab_trim_add, msp);
 	range_tree_vacate(*defer_tree,
 	    msp->ms_loaded ? range_tree_add : NULL, msp->ms_tree);
@@ -3323,7 +3324,8 @@ metaslab_free_dva(spa_t *spa, const dva_t *dva, uint64_t txg, boolean_t now)
 		VERIFY0(P2PHASE(size, 1ULL << vd->vdev_ashift));
 		range_tree_add(msp->ms_tree, offset, size);
 		msp->ms_max_size = metaslab_block_maxsize(msp);
-		if (spa_get_auto_trim(spa) == SPA_AUTO_TRIM_ON)
+		if (spa_get_auto_trim(spa) == SPA_AUTO_TRIM_ON &&
+		    !vd->vdev_man_trimming)
 			metaslab_trim_add(msp, offset, size);
 	} else {
 		VERIFY3U(txg, ==, spa->spa_syncing_txg);
@@ -3804,6 +3806,13 @@ metaslab_auto_trim(metaslab_t *msp, uint64_t txg)
 				 * back the device up with trim requests.
 				 */
 				spa_trimstats_auto_slow_incr(spa);
+				metaslab_free_trimset(msp->ms_prev_ts);
+			} else if (msp->ms_group->mg_vd->vdev_man_trimming) {
+				/*
+				 * If a manual trim is ongoing, we want to
+				 * inhibit autotrim temporarily so it doesn't
+				 * slow down the manual trim.
+				 */
 				metaslab_free_trimset(msp->ms_prev_ts);
 			} else {
 				/*

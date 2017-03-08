@@ -190,6 +190,7 @@ struct vdev {
 	kmutex_t	vdev_queue_lock; /* protects vdev_queue_depth	*/
 	uint64_t	vdev_top_zap;
 
+	boolean_t	vdev_man_trimming; /* manual trim is ongoing	*/
 	uint64_t	vdev_trim_prog;	/* trim progress in bytes	*/
 
 	/*
