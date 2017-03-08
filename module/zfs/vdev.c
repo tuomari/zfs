@@ -22,7 +22,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2011, 2015 by Delphix. All rights reserved.
- * Copyright 2016 Nexenta Systems, Inc.  All rights reserved.
+ * Copyright 2017 Nexenta Systems, Inc.  All rights reserved.
  */
 
 #include <sys/zfs_context.h>
@@ -3787,7 +3787,9 @@ out:
 	 * Ensure we're marked as "completed" even if we've had to stop
 	 * before processing all metaslabs.
 	 */
-	vd->vdev_trim_prog = vd->vdev_asize;
+	mutex_enter(&vd->vdev_stat_lock);
+	vd->vdev_trim_prog = vd->vdev_stat.vs_space;
+	mutex_exit(&vd->vdev_stat_lock);
 	vd->vdev_man_trimming = B_FALSE;
 
 	ASSERT(vti->vti_done_cb != NULL);
