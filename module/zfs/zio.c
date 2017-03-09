@@ -1028,7 +1028,8 @@ zio_ioctl(zio_t *pio, spa_t *spa, vdev_t *vd, int cmd,
  */
 zio_t *
 zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
-    boolean_t dfl_free_on_destroy, zio_done_func_t *done, void *private)
+    boolean_t dfl_free_on_destroy, boolean_t auto_trim,
+    zio_done_func_t *done, void *private)
 {
 	zio_t *zio;
 	int c;
@@ -1048,7 +1049,8 @@ zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
 
 		zio = zio_create(pio, spa, 0, NULL, NULL, 1 << vd->vdev_ashift,
 		    1 << vd->vdev_ashift, done, private, ZIO_TYPE_IOCTL,
-		    ZIO_PRIORITY_TRIM, ZIO_FLAG_CANFAIL | ZIO_FLAG_DONT_RETRY |
+		    auto_trim ? ZIO_PRIORITY_AUTO_TRIM : ZIO_PRIORITY_MAN_TRIM,
+		    ZIO_FLAG_CANFAIL | ZIO_FLAG_DONT_RETRY |
 		    ZIO_FLAG_DONT_PROPAGATE | ZIO_FLAG_DONT_AGGREGATE, vd, off,
 		    NULL, ZIO_STAGE_OPEN, ZIO_TRIM_PIPELINE);
 		zio->io_cmd = DKIOCFREE;
@@ -1067,11 +1069,11 @@ zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
 		zio->io_dfl_free_on_destroy = B_TRUE;
 
 		if (vd->vdev_ops->vdev_op_trim != NULL) {
-			vd->vdev_ops->vdev_op_trim(vd, zio, dfl);
+			vd->vdev_ops->vdev_op_trim(vd, zio, dfl, auto_trim);
 		} else {
 			for (c = 0; c < vd->vdev_children; c++) {
 				zio_nowait(zio_trim_dfl(zio, spa,
-				    vd->vdev_child[c], dfl, B_FALSE,
+				    vd->vdev_child[c], dfl, B_FALSE, auto_trim,
 				    NULL, NULL));
 			}
 		}
@@ -1115,7 +1117,8 @@ zio_trim_check(uint64_t start, uint64_t len, void *msp)
  */
 zio_t *
 zio_trim_tree(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
-    zio_done_func_t *done, void *private, int dkiocfree_flags, metaslab_t *msp)
+    boolean_t auto_trim, zio_done_func_t *done, void *private,
+    int dkiocfree_flags, metaslab_t *msp)
 {
 	dkioc_free_list_t *dfl = NULL;
 	range_seg_t *rs;
@@ -1176,7 +1179,8 @@ zio_trim_tree(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
 		dfl = dfl2;
 	}
 
-	return (zio_trim_dfl(pio, spa, vd, dfl, B_TRUE, done, private));
+	return (zio_trim_dfl(pio, spa, vd, dfl, B_TRUE, auto_trim, done,
+	    private));
 }
 
 zio_t *
@@ -3454,6 +3458,17 @@ zio_vdev_io_start(zio_t *zio)
 			zio_interrupt(zio);
 			return (ZIO_PIPELINE_STOP);
 		}
+	}
+
+	/*
+	 * Late pipeline bypass for auto trim zios. If a manual trim is
+	 * initiated with the queue full of auto trim zios, we want to skip
+	 * doing the auto trims, because they hold up the manual trim
+	 * unnecessarily. Manual trim processes all empty space anyway.
+	 */
+	if (ZIO_IS_TRIM(zio) && zio->io_priority == ZIO_PRIORITY_AUTO_TRIM &&
+	    zio->io_vd->vdev_man_trimming) {
+		return (ZIO_PIPELINE_CONTINUE);
 	}
 
 	zio->io_delay = gethrtime();

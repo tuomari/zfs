@@ -253,7 +253,8 @@ vdev_queue_class_min_active(zio_priority_t p)
 		return (zfs_vdev_async_write_min_active);
 	case ZIO_PRIORITY_SCRUB:
 		return (zfs_vdev_scrub_min_active);
-	case ZIO_PRIORITY_TRIM:
+	case ZIO_PRIORITY_AUTO_TRIM:
+	case ZIO_PRIORITY_MAN_TRIM:
 		return (zfs_vdev_trim_min_active);
 	default:
 		panic("invalid priority %u", p);
@@ -323,7 +324,8 @@ vdev_queue_class_max_active(spa_t *spa, zio_priority_t p)
 		return (vdev_queue_max_async_writes(spa));
 	case ZIO_PRIORITY_SCRUB:
 		return (zfs_vdev_scrub_max_active);
-	case ZIO_PRIORITY_TRIM:
+	case ZIO_PRIORITY_AUTO_TRIM:
+	case ZIO_PRIORITY_MAN_TRIM:
 		return (zfs_vdev_trim_max_active);
 	default:
 		panic("invalid priority %u", p);
@@ -397,7 +399,8 @@ vdev_queue_init(vdev_t *vd)
 		 * doesn't help.
 		 */
 		if (p == ZIO_PRIORITY_SYNC_READ ||
-		    p == ZIO_PRIORITY_SYNC_WRITE || p == ZIO_PRIORITY_TRIM)
+		    p == ZIO_PRIORITY_SYNC_WRITE ||
+		    p == ZIO_PRIORITY_AUTO_TRIM || p == ZIO_PRIORITY_MAN_TRIM)
 			compfn = vdev_queue_timestamp_compare;
 		else
 			compfn = vdev_queue_offset_compare;
@@ -735,7 +738,8 @@ again:
 
 	vdev_queue_pending_add(vq, zio);
 	/* trim I/Os have no single meaningful offset */
-	if (zio->io_priority != ZIO_PRIORITY_TRIM)
+	if (zio->io_priority != ZIO_PRIORITY_AUTO_TRIM ||
+	    zio->io_priority != ZIO_PRIORITY_MAN_TRIM)
 		vq->vq_last_offset = zio->io_offset;
 
 	return (zio);
@@ -765,8 +769,6 @@ vdev_queue_io(zio_t *zio)
 			zio->io_priority = ZIO_PRIORITY_ASYNC_WRITE;
 	} else {
 		ASSERT(ZIO_IS_TRIM(zio));
-		if (zio->io_cmd == DKIOCFREE)
-			zio->io_priority = ZIO_PRIORITY_TRIM;
 	}
 
 	zio->io_flags |= ZIO_FLAG_DONT_CACHE | ZIO_FLAG_DONT_QUEUE;

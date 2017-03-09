@@ -238,7 +238,7 @@ uint64_t zfs_max_bytes_per_trim = 128 << 20;
 static void metaslab_trim_remove(void *arg, uint64_t offset, uint64_t size);
 static void metaslab_trim_add(void *arg, uint64_t offset, uint64_t size);
 
-static zio_t *metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts);
+static zio_t *metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim);
 
 static metaslab_trimset_t *metaslab_new_trimset(uint64_t txg, kmutex_t *lock);
 static void metaslab_free_trimset(metaslab_trimset_t *ts);
@@ -3848,14 +3848,21 @@ metaslab_trim_done(zio_t *zio)
 
 /*
  * Executes a zio_trim on a range tree holding freed extents in the metaslab.
- * If `split_ts' is true, the set of extents in ms_prev_ts is broken up into
- * several zio_trim I/Os, each no more than zfs_max_bytes_per_trim bytes long.
- * Otherwise the whole trimset is issued in a single zio_trim I/O. This is
- * to avoid the unnecessary work if the trimset was already limited to
- * zfs_max_bytes_per_trim (manual trimming does this for its rate control).
+ * The set of extents is taken from the metaslab's ms_prev_ts. If there is
+ * another trim currently executing on that metaslab, this function blocks
+ * until that trim completes.
+ * The `auto_trim' argument signals whether the trim is being invoked on
+ * behalf of auto or manual trim. The differences are:
+ * 1) For auto trim the trimset is split up into zios of no more than
+ *	zfs_max_bytes_per_trim bytes. Manual trim already does this
+ *	earlier, so the whole trimset is issued in a single zio.
+ * 2) The zio(s) generated are tagged with either ZIO_PRIORITY_AUTO_TRIM or
+ *	ZIO_PRIORITY_MAN_TRIM to allow differentiating them further down
+ *	the pipeline (see zio_priority_t in sys/zio_priority.h).
+ * The function always returns a zio that the caller should zio_(no)wait.
  */
 static zio_t *
-metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts)
+metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 {
 	metaslab_group_t *mg = msp->ms_group;
 	spa_t *spa = mg->mg_class->mc_spa;
@@ -3896,7 +3903,7 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts)
 	}
 
 	pio = zio_null(NULL, spa, vd, metaslab_trim_done, msp, 0);
-	if (split_ts) {
+	if (auto_trim) {
 		uint64_t start = 0;
 		range_seg_t *rs;
 		range_tree_t *sub_trim_tree = range_tree_create(NULL, NULL,
@@ -3921,20 +3928,20 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t split_ts)
 			    max_bytes);
 			if (range_tree_space(sub_trim_tree) == max_bytes) {
 				zio_nowait(zio_trim_tree(pio, spa, vd,
-				    sub_trim_tree, NULL, NULL, trim_flags,
-				    msp));
+				    sub_trim_tree, auto_trim, NULL, NULL,
+				    trim_flags, msp));
 				range_tree_vacate(sub_trim_tree, NULL, NULL);
 			}
 			start = end;
 		}
 		if (range_tree_space(sub_trim_tree) != 0) {
 			zio_nowait(zio_trim_tree(pio, spa, vd, sub_trim_tree,
-			    NULL, NULL, trim_flags, msp));
+			    auto_trim, NULL, NULL, trim_flags, msp));
 			range_tree_vacate(sub_trim_tree, NULL, NULL);
 		}
 		range_tree_destroy(sub_trim_tree);
 	} else {
-		zio_nowait(zio_trim_tree(pio, spa, vd, trim_tree,
+		zio_nowait(zio_trim_tree(pio, spa, vd, trim_tree, auto_trim,
 		    NULL, NULL, trim_flags, msp));
 	}
 

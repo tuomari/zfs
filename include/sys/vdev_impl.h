@@ -72,7 +72,7 @@ typedef void	vdev_state_change_func_t(vdev_t *vd, int, int);
 typedef void	vdev_hold_func_t(vdev_t *vd);
 typedef void	vdev_rele_func_t(vdev_t *vd);
 typedef void	vdev_trim_func_t(vdev_t *vd, zio_t *pio,
-    dkioc_free_list_t *trim_exts);
+    dkioc_free_list_t *trim_exts, boolean_t auto_trim);
 
 typedef const struct vdev_ops {
 	vdev_open_func_t		*vdev_op_open;
