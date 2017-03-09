@@ -3693,8 +3693,7 @@ metaslab_trim_all(metaslab_t *msp, uint64_t *cursor, uint64_t *delta,
 		if (rs != NULL)
 			cur = rs->rs_start;
 	}
-	for (; rs != NULL && trimmed_space < max_bytes;
-	    rs = AVL_NEXT(&msp->ms_tree->rt_root, rs)) {
+	while (rs != NULL && trimmed_space < max_bytes) {
 		uint64_t end;
 		if (cur < rs->rs_start)
 			cur = rs->rs_start;
@@ -3702,6 +3701,8 @@ metaslab_trim_all(metaslab_t *msp, uint64_t *cursor, uint64_t *delta,
 		metaslab_trim_add(msp, cur, end - cur);
 		trimmed_space += (end - cur);
 		cur = end;
+		if (cur == rs->rs_end)
+			rs = AVL_NEXT(&msp->ms_tree->rt_root, rs);
 	}
 
 	if (trimmed_space != 0) {
