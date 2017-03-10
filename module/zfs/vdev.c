@@ -3719,7 +3719,7 @@ vdev_man_trim(vdev_trim_info_t *vti)
 	clock_t t = ddi_get_lbolt();
 	spa_t *spa = vti->vti_vdev->vdev_spa;
 	vdev_t *vd = vti->vti_vdev;
-	uint64_t cursor;
+	uint64_t i, cursor;
 	boolean_t was_loaded = B_FALSE;
 
 	vd->vdev_man_trimming = B_TRUE;
@@ -3728,8 +3728,8 @@ vdev_man_trim(vdev_trim_info_t *vti)
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
 	ASSERT(vd->vdev_ms[0] != NULL);
 	cursor = vd->vdev_ms[0]->ms_start;
-	for (uint64_t i = 0; i < vti->vti_vdev->vdev_ms_count &&
-	    !spa->spa_man_trim_stop;) {
+	i = 0;
+	while (i < vti->vti_vdev->vdev_ms_count && !spa->spa_man_trim_stop) {
 		uint64_t delta;
 		metaslab_t *msp = vd->vdev_ms[i];
 		zio_t *trim_io;

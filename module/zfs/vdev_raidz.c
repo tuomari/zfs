@@ -2432,15 +2432,15 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, dkioc_free_list_t *dfl,
 }
 
 vdev_ops_t vdev_raidz_ops = {
-	vdev_raidz_open,
-	vdev_raidz_close,
-	vdev_raidz_asize,
-	vdev_raidz_io_start,
-	vdev_raidz_io_done,
-	vdev_raidz_state_change,
-	NULL,
-	NULL,
-	vdev_raidz_trim,
-	VDEV_TYPE_RAIDZ,	/* name of this vdev type */
-	B_FALSE			/* not a leaf vdev */
+	.vdev_op_open =		vdev_raidz_open,
+	.vdev_op_close =	vdev_raidz_close,
+	.vdev_op_asize =	vdev_raidz_asize,
+	.vdev_op_io_start =	vdev_raidz_io_start,
+	.vdev_op_io_done =	vdev_raidz_io_done,
+	.vdev_op_state_change =	vdev_raidz_state_change,
+	.vdev_op_hold =		NULL,
+	.vdev_op_rele =		NULL,
+	.vdev_op_trim =		vdev_raidz_trim,
+	.vdev_op_type =		VDEV_TYPE_RAIDZ, /* name of this vdev type */
+	.vdev_op_leaf =		B_FALSE		/* not a leaf vdev */
 };
