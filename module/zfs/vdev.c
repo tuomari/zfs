@@ -72,6 +72,15 @@ static vdev_ops_t *vdev_ops_table[] = {
 };
 
 /*
+ * If we accumulate a lot of trim extents due to trim running slow, this
+ * is the memory pressure valve. We limit the amount of memory consumed
+ * by the extents in memory to physmem/zfs_trim_mem_lim_fact (by default
+ * 1%). If we exceed this limit, we start throwing out new extents
+ * without queueing them.
+ */
+uint64_t zfs_trim_mem_lim_fact = 100;
+
+/*
  * Given a vdev type, return the appropriate ops vector.
  */
 static vdev_ops_t *
@@ -3807,12 +3816,25 @@ vdev_auto_trim(vdev_trim_info_t *vti)
 	vdev_t *vd = vti->vti_vdev;
 	spa_t *spa = vd->vdev_spa;
 	uint64_t txg = vti->vti_txg;
+	uint64_t mlim = 0, mused = 0;
+	boolean_t limited;
+
+	if (vd->vdev_man_trimming)
+		goto out;
 
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
 	for (uint64_t i = 0; i < vd->vdev_ms_count; i++)
-		metaslab_auto_trim(vd->vdev_ms[i], txg);
+		mused += metaslab_trim_mem_used(vd->vdev_ms[i]);
+	mlim = (physmem * PAGESIZE) / (zfs_trim_mem_lim_fact *
+	    spa->spa_root_vdev->vdev_children);
+	limited = mused > mlim;
+	DTRACE_PROBE3(autotrim__mem__lim, vdev_t *, vd, uint64_t, mused,
+	    uint64_t, mlim);
+	for (uint64_t i = 0; i < vd->vdev_ms_count; i++)
+		metaslab_auto_trim(vd->vdev_ms[i], txg, !limited);
 	spa_config_exit(spa, SCL_STATE_ALL, FTAG);
 
+out:
 	ASSERT(vti->vti_done_cb != NULL);
 	vti->vti_done_cb(vti->vti_done_arg);
 

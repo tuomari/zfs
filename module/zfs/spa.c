@@ -6591,11 +6591,8 @@ spa_sync(spa_t *spa, uint64_t txg)
 	 * from starting and the current txg sync was invoked on its behalf,
 	 * so be prepared to postpone autotrim processing.
 	 */
-	if (mutex_tryenter(&spa->spa_auto_trim_lock)) {
-		if (spa->spa_auto_trim == SPA_AUTO_TRIM_ON)
-			spa_auto_trim(spa, txg);
-		mutex_exit(&spa->spa_auto_trim_lock);
-	}
+	if (spa->spa_auto_trim == SPA_AUTO_TRIM_ON)
+		spa_auto_trim(spa, txg);
 
 	/*
 	 * If there are any pending vdev state changes, convert them
@@ -7047,13 +7044,15 @@ spa_event_notify(spa_t *spa, vdev_t *vd, const char *name)
 static void
 spa_auto_trim(spa_t *spa, uint64_t txg)
 {
-	int i;
-
 	ASSERT(spa_config_held(spa, SCL_CONFIG, RW_READER) == SCL_CONFIG);
-	ASSERT(MUTEX_HELD(&spa->spa_auto_trim_lock));
+	ASSERT(!MUTEX_HELD(&spa->spa_auto_trim_lock));
 	ASSERT(spa->spa_auto_trim_taskq != NULL);
 
-	for (i = 0; i < spa->spa_root_vdev->vdev_children; i++) {
+	mutex_enter(&spa->spa_auto_trim_lock);
+	spa->spa_num_auto_trimming += spa->spa_root_vdev->vdev_children;
+	mutex_exit(&spa->spa_auto_trim_lock);
+
+	for (uint64_t i = 0; i < spa->spa_root_vdev->vdev_children; i++) {
 		vdev_trim_info_t *vti = kmem_zalloc(sizeof (*vti), KM_SLEEP);
 		vti->vti_vdev = spa->spa_root_vdev->vdev_child[i];
 		vti->vti_txg = txg;
@@ -7061,7 +7060,6 @@ spa_auto_trim(spa_t *spa, uint64_t txg)
 		vti->vti_done_arg = spa;
 		(void) taskq_dispatch(spa->spa_auto_trim_taskq,
 		    (void (*)(void *))vdev_auto_trim, vti, TQ_SLEEP);
-		spa->spa_num_auto_trimming++;
 	}
 }
 

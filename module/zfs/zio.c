@@ -3332,6 +3332,27 @@ zio_free_zil(spa_t *spa, uint64_t txg, blkptr_t *bp)
  * ==========================================================================
  */
 
+/*
+ * Late pipeline bypass for trim zios. Because our zio trim queues can be
+ * pretty long and we might want to quickly terminate trims for performance
+ * reasons, we check the following conditions:
+ * 1) If a manual trim was initiated with the queue full of auto trim zios,
+ *	we want to skip doing the auto trims, because they hold up the manual
+ *	trim unnecessarily. Manual trim processes all empty space anyway.
+ * 2) If the autotrim property of the pool is flipped to off, usually due to
+ *	performance reasons, we want to stop trying to do autotrims/
+ * 3) If a manual trim shutdown was requested, immediately terminate them.
+ */
+static inline boolean_t
+zio_trim_should_bypass(const zio_t *zio)
+{
+	ASSERT(ZIO_IS_TRIM(zio));
+	return ((zio->io_priority == ZIO_PRIORITY_AUTO_TRIM &&
+	    (zio->io_vd->vdev_top->vdev_man_trimming ||
+	    zio->io_spa->spa_auto_trim != SPA_AUTO_TRIM_ON)) ||
+	    (zio->io_priority == ZIO_PRIORITY_MAN_TRIM &&
+	    zio->io_spa->spa_man_trim_stop));
+}
 
 /*
  * Issue an I/O to the underlying vdev. Typically the issue pipeline
@@ -3460,16 +3481,8 @@ zio_vdev_io_start(zio_t *zio)
 		}
 	}
 
-	/*
-	 * Late pipeline bypass for auto trim zios. If a manual trim is
-	 * initiated with the queue full of auto trim zios, we want to skip
-	 * doing the auto trims, because they hold up the manual trim
-	 * unnecessarily. Manual trim processes all empty space anyway.
-	 */
-	if (ZIO_IS_TRIM(zio) && zio->io_priority == ZIO_PRIORITY_AUTO_TRIM &&
-	    zio->io_vd->vdev_man_trimming) {
+	if (ZIO_IS_TRIM(zio) && zio_trim_should_bypass(zio))
 		return (ZIO_PIPELINE_CONTINUE);
-	}
 
 	zio->io_delay = gethrtime();
 	vd->vdev_ops->vdev_op_io_start(zio);

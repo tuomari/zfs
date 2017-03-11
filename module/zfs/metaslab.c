@@ -3693,6 +3693,13 @@ metaslab_trim_all(metaslab_t *msp, uint64_t *cursor, uint64_t *delta,
 		if (rs != NULL)
 			cur = rs->rs_start;
 	}
+
+	/* Clear out ms_prev_ts, since we'll be trimming everything. */
+	if (msp->ms_prev_ts != NULL) {
+		metaslab_free_trimset(msp->ms_prev_ts);
+		msp->ms_prev_ts = NULL;
+	}
+
 	while (rs != NULL && trimmed_space < max_bytes) {
 		uint64_t end;
 		if (cur < rs->rs_start)
@@ -3707,8 +3714,6 @@ metaslab_trim_all(metaslab_t *msp, uint64_t *cursor, uint64_t *delta,
 
 	if (trimmed_space != 0) {
 		/* Force this trim to take place ASAP. */
-		if (msp->ms_prev_ts != NULL)
-			metaslab_free_trimset(msp->ms_prev_ts);
 		msp->ms_prev_ts = msp->ms_cur_ts;
 		msp->ms_cur_ts = metaslab_new_trimset(0, &msp->ms_lock);
 		trim_io = metaslab_exec_trim(msp, B_FALSE);
@@ -3757,15 +3762,24 @@ metaslab_trim_add(void *arg, uint64_t offset, uint64_t size)
 	metaslab_t *msp = arg;
 	ASSERT(msp->ms_cur_ts != NULL);
 	range_tree_add(msp->ms_cur_ts->ts_tree, offset, size);
+	if (msp->ms_prev_ts != NULL) {
+		ASSERT(!range_tree_contains_part(msp->ms_prev_ts->ts_tree,
+		    offset, size));
+	}
 }
 
 /*
  * Does a metaslab's automatic trim operation processing. This must be
  * called from metaslab_sync, with the txg number of the txg. This function
  * issues trims in intervals as dictated by the zfs_txgs_per_trim tunable.
+ * If the previous trimset has not yet finished trimming, this function
+ * decides what to do based on `preserve_spilled'. If preserve_spilled is
+ * false, the next trimset which would have been issued is simply dropped to
+ * limit memory usage. Otherwise it is preserved by adding it to the cur_ts
+ * trimset.
  */
 void
-metaslab_auto_trim(metaslab_t *msp, uint64_t txg)
+metaslab_auto_trim(metaslab_t *msp, uint64_t txg, boolean_t preserve_spilled)
 {
 	/* for atomicity */
 	uint64_t txgs_per_trim = zfs_txgs_per_trim;
@@ -3804,7 +3818,18 @@ metaslab_auto_trim(metaslab_t *msp, uint64_t txg)
 				 * requests. Drop this trimset, so as not to
 				 * back the device up with trim requests.
 				 */
-				spa_trimstats_auto_slow_incr(spa);
+				if (preserve_spilled) {
+					DTRACE_PROBE1(preserve__spilled,
+					    metaslab_t *, msp);
+					range_tree_vacate(
+					    msp->ms_prev_ts->ts_tree,
+					    range_tree_add,
+					    msp->ms_cur_ts->ts_tree);
+				} else {
+					DTRACE_PROBE1(drop__spilled,
+					    metaslab_t *, msp);
+					spa_trimstats_auto_slow_incr(spa);
+				}
 				metaslab_free_trimset(msp->ms_prev_ts);
 			} else if (msp->ms_group->mg_vd->vdev_man_trimming) {
 				/*
@@ -3829,6 +3854,48 @@ metaslab_auto_trim(metaslab_t *msp, uint64_t txg)
 	mutex_exit(&msp->ms_lock);
 }
 
+/*
+ * Computes the amount of memory a trimset is expected to use if issued out
+ * to be trimmed. The calculation isn't 100% accurate, because we don't
+ * know how the trimset's extents might subdivide into smaller extents
+ * (dkioc_free_list_ext_t) that actually get passed to the zio, but luckily
+ * the extent structure is fairly small compared to the size of a zio_t, so
+ * it's less important that we get that absolutely correct. We just want to
+ * get it "close enough".
+ */
+static uint64_t
+metaslab_trimset_mem_used(metaslab_trimset_t *ts)
+{
+	uint64_t result = 0;
+
+	result += avl_numnodes(&ts->ts_tree->rt_root) * (sizeof (range_seg_t) +
+	    sizeof (dkioc_free_list_ext_t));
+	result += ((range_tree_space(ts->ts_tree) / zfs_max_bytes_per_trim) +
+	    1) * sizeof (zio_t);
+	result += sizeof (range_tree_t) + sizeof (metaslab_trimset_t);
+
+	return (result);
+}
+
+/*
+ * Computes the amount of memory used by the trimsets and queued trim zios of
+ * a metaslab.
+ */
+uint64_t
+metaslab_trim_mem_used(metaslab_t *msp)
+{
+	uint64_t result = 0;
+
+	ASSERT(!MUTEX_HELD(&msp->ms_lock));
+	mutex_enter(&msp->ms_lock);
+	result += metaslab_trimset_mem_used(msp->ms_cur_ts);
+	if (msp->ms_prev_ts != NULL)
+		result += metaslab_trimset_mem_used(msp->ms_prev_ts);
+	mutex_exit(&msp->ms_lock);
+
+	return (result);
+}
+
 static void
 metaslab_trim_done(zio_t *zio)
 {
@@ -3842,7 +3909,7 @@ metaslab_trim_done(zio_t *zio)
 		mutex_enter(&msp->ms_lock);
 	metaslab_free_trimset(msp->ms_trimming_ts);
 	msp->ms_trimming_ts = NULL;
-	cv_signal(&msp->ms_trim_cv);
+	cv_broadcast(&msp->ms_trim_cv);
 	if (!held)
 		mutex_exit(&msp->ms_lock);
 }
@@ -3903,12 +3970,13 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 		return (zio_null(NULL, spa, NULL, NULL, NULL, 0));
 	}
 
-	pio = zio_null(NULL, spa, vd, metaslab_trim_done, msp, 0);
 	if (auto_trim) {
 		uint64_t start = 0;
 		range_seg_t *rs;
 		range_tree_t *sub_trim_tree = range_tree_create(NULL, NULL,
 		    &msp->ms_lock);
+		zio_t *pio = zio_null(NULL, spa, vd, metaslab_trim_done, msp,
+		    0);
 
 		rs = avl_first(&trim_tree->rt_root);
 		if (rs != NULL)
@@ -3941,12 +4009,12 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 			range_tree_vacate(sub_trim_tree, NULL, NULL);
 		}
 		range_tree_destroy(sub_trim_tree);
-	} else {
-		zio_nowait(zio_trim_tree(pio, spa, vd, trim_tree, auto_trim,
-		    NULL, NULL, trim_flags, msp));
-	}
 
-	return (pio);
+		return (pio);
+	} else {
+		return (zio_trim_tree(NULL, spa, vd, trim_tree, auto_trim,
+		    metaslab_trim_done, msp, trim_flags, msp));
+	}
 }
 
 /*

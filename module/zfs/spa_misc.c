@@ -367,6 +367,11 @@ int spa_asize_inflation = 24;
 int spa_slop_shift = 5;
 uint64_t spa_min_slop = 128 * 1024 * 1024;
 
+/*
+ * Percentage of the number of CPUs to use as the autotrim taskq thread count.
+ */
+int zfs_auto_trim_taskq_batch_pct = 75;
+
 static void spa_trimstats_create(spa_t *spa);
 static void spa_trimstats_destroy(spa_t *spa);
 
@@ -2197,8 +2202,9 @@ spa_auto_trim_taskq_create(spa_t *spa)
 	ASSERT(MUTEX_HELD(&spa->spa_auto_trim_lock));
 	ASSERT(spa->spa_auto_trim_taskq == NULL);
 	(void) snprintf(name, MAXPATHLEN, "%s_auto_trim", spa->spa_name);
-	spa->spa_auto_trim_taskq = taskq_create(name, 1, minclsyspri, 1,
-	    spa->spa_root_vdev->vdev_children, TASKQ_DYNAMIC);
+	spa->spa_auto_trim_taskq = taskq_create(name,
+	    zfs_auto_trim_taskq_batch_pct, minclsyspri, 1, INT_MAX,
+	    TASKQ_THREADS_CPU_PCT);
 	VERIFY(spa->spa_auto_trim_taskq != NULL);
 	kmem_free(name, MAXPATHLEN);
 }
@@ -2223,8 +2229,10 @@ spa_man_trim_taskq_create(spa_t *spa)
 		return;
 	}
 	(void) snprintf(name, MAXPATHLEN, "%s_man_trim", spa->spa_name);
-	spa->spa_man_trim_taskq = taskq_create(name, 1, minclsyspri, 1,
-	    spa->spa_root_vdev->vdev_children, TASKQ_DYNAMIC);
+	spa->spa_man_trim_taskq = taskq_create(name,
+	    spa->spa_root_vdev->vdev_children, minclsyspri,
+	    spa->spa_root_vdev->vdev_children,
+	    spa->spa_root_vdev->vdev_children, TASKQ_PREPOPULATE);
 	VERIFY(spa->spa_man_trim_taskq != NULL);
 	kmem_free(name, MAXPATHLEN);
 }
@@ -2371,5 +2379,10 @@ MODULE_PARM_DESC(spa_asize_inflation,
 
 module_param(spa_slop_shift, int, 0644);
 MODULE_PARM_DESC(spa_slop_shift, "Reserved free space in pool");
+
+module_param(zfs_auto_trim_taskq_batch_pct, int, 0644);
+MODULE_PARM_DESC(zfs_auto_trim_taskq_batch_pct,
+	"Percentage of the number of CPUs to use as the autotrim taskq"
+	" thread count");
 /* END CSTYLED */
 #endif
