@@ -3936,7 +3936,6 @@ metaslab_exec_trim(metaslab_t *msp, boolean_t auto_trim)
 	spa_t *spa = mg->mg_class->mc_spa;
 	vdev_t *vd = mg->mg_vd;
 	range_tree_t *trim_tree;
-	zio_t *pio;
 	const uint64_t max_bytes = zfs_max_bytes_per_trim;
 	const enum zio_flag trim_flags = ZIO_FLAG_CANFAIL |
 	    ZIO_FLAG_DONT_PROPAGATE | ZIO_FLAG_DONT_RETRY |

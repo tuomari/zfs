@@ -192,6 +192,17 @@ struct vdev {
 
 	boolean_t	vdev_man_trimming; /* manual trim is ongoing	*/
 	uint64_t	vdev_trim_prog;	/* trim progress in bytes	*/
+	/*
+	 * Because trim zios happen outside of the DMU transactional engine,
+	 * we cannot rely on the DMU quiescing async trim zios to the vdev
+	 * before doing pool reconfiguration tasks. Therefore we count them
+	 * separately and quiesce them using vdev_trim_stop_wait before
+	 * removing or changing vdevs.
+	 */
+	kmutex_t	vdev_trim_zios_lock;
+	kcondvar_t	vdev_trim_zios_cv;
+	uint64_t	vdev_trim_zios;	/* # of in-flight async trim zios */
+	boolean_t	vdev_trim_zios_stop;	/* see zio_trim_should_bypass */
 
 	/*
 	 * The queue depth parameters determine how many async writes are

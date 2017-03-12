@@ -4717,6 +4717,8 @@ spa_vdev_attach(spa_t *spa, uint64_t guid, nvlist_t *nvroot, int replacing)
 	if (newvd->vdev_ashift > oldvd->vdev_top->vdev_ashift)
 		return (spa_vdev_exit(spa, newrootvd, txg, EDOM));
 
+	vdev_trim_stop_wait(oldvd->vdev_top);
+
 	/*
 	 * If this is an in-place replacement, update oldvd's path and devid
 	 * to make it distinguishable from newvd, and unopenable from now on.
@@ -4890,6 +4892,8 @@ spa_vdev_detach(spa_t *spa, uint64_t guid, uint64_t pguid, int replace_done)
 	 */
 	if (vdev_dtl_required(vd))
 		return (spa_vdev_exit(spa, NULL, txg, EBUSY));
+
+	vdev_trim_stop_wait(vd->vdev_top);
 
 	ASSERT(pvd->vdev_children >= 2);
 
@@ -5126,6 +5130,8 @@ spa_vdev_split_mirror(spa_t *spa, char *newname, nvlist_t *config,
 	if (nvlist_lookup_nvlist(nvl, ZPOOL_CONFIG_SPARES, &tmp) == 0 ||
 	    nvlist_lookup_nvlist(nvl, ZPOOL_CONFIG_L2CACHE, &tmp) == 0)
 		return (spa_vdev_exit(spa, NULL, txg, EINVAL));
+
+	vdev_trim_stop_wait(rvd);
 
 	vml = kmem_zalloc(children * sizeof (vdev_t *), KM_SLEEP);
 	glist = kmem_zalloc(children * sizeof (uint64_t), KM_SLEEP);
@@ -5556,6 +5562,8 @@ spa_vdev_remove(spa_t *spa, uint64_t guid, boolean_t unspare)
 		 * Stop allocating from this vdev.
 		 */
 		metaslab_group_passivate(mg);
+
+		vdev_trim_stop_wait(vd);
 
 		/*
 		 * Wait for the youngest allocations and frees to sync,
@@ -6586,11 +6594,6 @@ spa_sync(spa_t *spa, uint64_t txg)
 	VERIFY0(avl_numnodes(&spa->spa_alloc_tree));
 	mutex_exit(&spa->spa_alloc_lock);
 
-	/*
-	 * Another pool management task might be currently preventing
-	 * from starting and the current txg sync was invoked on its behalf,
-	 * so be prepared to postpone autotrim processing.
-	 */
 	if (spa->spa_auto_trim == SPA_AUTO_TRIM_ON)
 		spa_auto_trim(spa, txg);
 
@@ -7048,7 +7051,13 @@ spa_auto_trim(spa_t *spa, uint64_t txg)
 	ASSERT(!MUTEX_HELD(&spa->spa_auto_trim_lock));
 	ASSERT(spa->spa_auto_trim_taskq != NULL);
 
-	mutex_enter(&spa->spa_auto_trim_lock);
+	/*
+	 * Another pool management task might be currently prevented from
+	 * starting and the current txg sync was invoked on its behalf,
+	 * so be prepared to postpone autotrim processing.
+	 */
+	if (!mutex_tryenter(&spa->spa_auto_trim_lock))
+		return;
 	spa->spa_num_auto_trimming += spa->spa_root_vdev->vdev_children;
 	mutex_exit(&spa->spa_auto_trim_lock);
 

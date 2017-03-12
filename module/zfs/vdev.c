@@ -385,6 +385,9 @@ vdev_alloc_common(spa_t *spa, uint_t id, uint64_t guid, vdev_ops_t *ops)
 	vdev_queue_init(vd);
 	vdev_cache_init(vd);
 
+	mutex_init(&vd->vdev_trim_zios_lock, NULL, MUTEX_DEFAULT, NULL);
+	cv_init(&vd->vdev_trim_zios_cv, NULL, CV_DEFAULT, NULL);
+
 	return (vd);
 }
 
@@ -716,6 +719,10 @@ vdev_free(vdev_t *vd)
 	mutex_destroy(&vd->vdev_dtl_lock);
 	mutex_destroy(&vd->vdev_stat_lock);
 	mutex_destroy(&vd->vdev_probe_lock);
+
+	ASSERT0(vd->vdev_trim_zios);
+	mutex_destroy(&vd->vdev_trim_zios_lock);
+	cv_destroy(&vd->vdev_trim_zios_cv);
 
 	if (vd == spa->spa_root_vdev)
 		spa->spa_root_vdev = NULL;
@@ -3819,6 +3826,8 @@ vdev_auto_trim(vdev_trim_info_t *vti)
 	uint64_t mlim = 0, mused = 0;
 	boolean_t limited;
 
+	ASSERT3P(vd->vdev_top, ==, vd);
+
 	if (vd->vdev_man_trimming)
 		goto out;
 
@@ -3839,6 +3848,56 @@ out:
 	vti->vti_done_cb(vti->vti_done_arg);
 
 	kmem_free(vti, sizeof (*vti));
+}
+
+static void
+trim_stop_set(vdev_t *vd, boolean_t flag)
+{
+	mutex_enter(&vd->vdev_trim_zios_lock);
+	vd->vdev_trim_zios_stop = flag;
+	mutex_exit(&vd->vdev_trim_zios_lock);
+
+	for (uint64_t i = 0; i < vd->vdev_children; i++)
+		trim_stop_set(vd->vdev_child[i], flag);
+}
+
+static void
+trim_stop_wait(vdev_t *vd)
+{
+	mutex_enter(&vd->vdev_trim_zios_lock);
+	while (vd->vdev_trim_zios)
+		cv_wait(&vd->vdev_trim_zios_cv, &vd->vdev_trim_zios_lock);
+	mutex_exit(&vd->vdev_trim_zios_lock);
+
+	for (uint64_t i = 0; i < vd->vdev_children; i++)
+		trim_stop_wait(vd->vdev_child[i]);
+}
+
+/*
+ * This function stops all asynchronous trim I/O going to a vdev and all
+ * its children. Because trim zios occur outside of the normal transactional
+ * machinery, we can't rely on the DMU hooks to stop I/O to devices being
+ * removed or reconfigured. Therefore, all pool management tasks which
+ * change the vdev configuration need to stop trim I/Os explicitly.
+ * After this function returns, it is guaranteed that no trim zios will be
+ * executing on the vdev or any of its children until either of the
+ * trim locks is released.
+ */
+void
+vdev_trim_stop_wait(vdev_t *vd)
+{
+	ASSERT(MUTEX_HELD(&vd->vdev_spa->spa_man_trim_lock));
+	ASSERT(MUTEX_HELD(&vd->vdev_spa->spa_auto_trim_lock));
+	/*
+	 * First we mark all devices as requesting a trim stop. This starts
+	 * the vdev queue drain (via zio_trim_should_bypass) quickly, then
+	 * we actually wait for all trim zios to get destroyed and then we
+	 * unmark the stop condition so trim zios can configure once the
+	 * pool management operation is done.
+	 */
+	trim_stop_set(vd, B_TRUE);
+	trim_stop_wait(vd);
+	trim_stop_set(vd, B_FALSE);
 }
 
 #if defined(_KERNEL) && defined(HAVE_SPL)

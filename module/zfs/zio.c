@@ -690,6 +690,16 @@ zio_create(zio_t *pio, spa_t *spa, uint64_t txg, const blkptr_t *bp,
 static void
 zio_destroy(zio_t *zio)
 {
+	if (ZIO_IS_TRIM(zio)) {
+		vdev_t *vd = zio->io_vd;
+		ASSERT(vd != NULL);
+		ASSERT(!MUTEX_HELD(&vd->vdev_trim_zios_lock));
+		mutex_enter(&vd->vdev_trim_zios_lock);
+		ASSERT(vd->vdev_trim_zios != 0);
+		vd->vdev_trim_zios--;
+		cv_broadcast(&vd->vdev_trim_zios_cv);
+		mutex_exit(&vd->vdev_trim_zios_lock);
+	}
 	metaslab_trace_fini(&zio->io_alloc_list);
 	list_destroy(&zio->io_parent_list);
 	list_destroy(&zio->io_child_list);
@@ -1056,6 +1066,10 @@ zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
 		zio->io_cmd = DKIOCFREE;
 		zio->io_dfl = dfl;
 		zio->io_dfl_free_on_destroy = dfl_free_on_destroy;
+
+		mutex_enter(&vd->vdev_trim_zios_lock);
+		vd->vdev_trim_zios++;
+		mutex_exit(&vd->vdev_trim_zios_lock);
 	} else {
 		/*
 		 * Trims to non-leaf vdevs have two possible paths. For vdevs
@@ -1066,7 +1080,7 @@ zio_trim_dfl(zio_t *pio, spa_t *spa, vdev_t *vd, dkioc_free_list_t *dfl,
 		 */
 		zio = zio_null(pio, spa, vd, done, private, 0);
 		zio->io_dfl = dfl;
-		zio->io_dfl_free_on_destroy = B_TRUE;
+		zio->io_dfl_free_on_destroy = dfl_free_on_destroy;
 
 		if (vd->vdev_ops->vdev_op_trim != NULL) {
 			vd->vdev_ops->vdev_op_trim(vd, zio, dfl, auto_trim);
@@ -3342,6 +3356,8 @@ zio_free_zil(spa_t *spa, uint64_t txg, blkptr_t *bp)
  * 2) If the autotrim property of the pool is flipped to off, usually due to
  *	performance reasons, we want to stop trying to do autotrims/
  * 3) If a manual trim shutdown was requested, immediately terminate them.
+ * 4) If a pool vdev reconfiguration is imminent, we must discard all queued
+ *	up trims to let it proceed as quickly as possible.
  */
 static inline boolean_t
 zio_trim_should_bypass(const zio_t *zio)
@@ -3351,7 +3367,8 @@ zio_trim_should_bypass(const zio_t *zio)
 	    (zio->io_vd->vdev_top->vdev_man_trimming ||
 	    zio->io_spa->spa_auto_trim != SPA_AUTO_TRIM_ON)) ||
 	    (zio->io_priority == ZIO_PRIORITY_MAN_TRIM &&
-	    zio->io_spa->spa_man_trim_stop));
+	    zio->io_spa->spa_man_trim_stop) ||
+	    zio->io_vd->vdev_trim_zios_stop);
 }
 
 /*
