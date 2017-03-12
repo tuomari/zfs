@@ -75,10 +75,10 @@ static vdev_ops_t *vdev_ops_table[] = {
  * If we accumulate a lot of trim extents due to trim running slow, this
  * is the memory pressure valve. We limit the amount of memory consumed
  * by the extents in memory to physmem/zfs_trim_mem_lim_fact (by default
- * 1%). If we exceed this limit, we start throwing out new extents
+ * 2%). If we exceed this limit, we start throwing out new extents
  * without queueing them.
  */
-uint64_t zfs_trim_mem_lim_fact = 100;
+uint64_t zfs_trim_mem_lim_fact = 50;
 
 /*
  * Given a vdev type, return the appropriate ops vector.
