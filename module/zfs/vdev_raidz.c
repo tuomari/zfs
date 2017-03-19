@@ -2364,7 +2364,6 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	dkioc_free_list_t *dfl = trim_exts;
 	dkioc_free_list_t **sub_dfls;
 	uint64_t *sub_dfls_num_exts;
-	int i;
 	zio_t *zio;
 
 	sub_dfls = kmem_zalloc(sizeof (*sub_dfls) * vd->vdev_children,
@@ -2372,7 +2371,7 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	sub_dfls_num_exts = kmem_zalloc(sizeof (uint64_t) * vd->vdev_children,
 	    KM_SLEEP);
 	zio = kmem_zalloc(sizeof (*zio), KM_SLEEP);
-	for (i = 0; i < vd->vdev_children; i++) {
+	for (int i = 0; i < vd->vdev_children; i++) {
 		/*
 		 * We might over-allocate here, because the sub-lists can never
 		 * be longer than the parent list, but they can be shorter.
@@ -2389,7 +2388,7 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	 * Process all extents and redistribute them to the component vdevs
 	 * according to a computed raidz map geometry.
 	 */
-	for (i = 0; i < dfl->dfl_num_exts; i++) {
+	for (int i = 0; i < dfl->dfl_num_exts; i++) {
 		uint64_t start = dfl->dfl_exts[i].dfle_start;
 		uint64_t length = dfl->dfl_exts[i].dfle_length;
 		uint64_t j;
@@ -2413,7 +2412,7 @@ vdev_raidz_trim(vdev_t *vd, zio_t *pio, void *trim_exts)
 	/*
 	 * Issue the component ioctls as children of the parent zio.
 	 */
-	for (i = 0; i < vd->vdev_children; i++) {
+	for (int i = 0; i < vd->vdev_children; i++) {
 		if (sub_dfls_num_exts[i] != 0) {
 			zio_nowait(zio_ioctl(pio, vd->vdev_child[i]->vdev_spa,
 			    vd->vdev_child[i], DKIOCFREE,

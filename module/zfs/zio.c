@@ -21,7 +21,7 @@
 /*
  * Copyright (c) 2005, 2010, Oracle and/or its affiliates. All rights reserved.
  * Copyright (c) 2011, 2017 by Delphix. All rights reserved.
- * Copyright (c) 2016 Nexenta Systems, Inc. All rights reserved.
+ * Copyright (c) 2017 Nexenta Systems, Inc. All rights reserved.
  */
 
 #include <sys/sysmacros.h>
@@ -44,7 +44,6 @@
 #include <sys/trace_zio.h>
 #include <sys/abd.h>
 #include <sys/dkioc_free_util.h>
-
 #include <sys/metaslab_impl.h>
 
 /*
@@ -1068,7 +1067,7 @@ zio_trim_check(uint64_t start, uint64_t len, void *msp)
  * and thin-provisioned block storage to reclaim unused blocks.
  */
 zio_t *
-zio_trim(spa_t *spa, vdev_t *vd, struct range_tree *tree,
+zio_trim(zio_t *pio, spa_t *spa, vdev_t *vd, struct range_tree *tree,
     zio_done_func_t *done, void *private, enum zio_flag flags,
     int trim_flags, metaslab_t *msp)
 {
@@ -1082,7 +1081,7 @@ zio_trim(spa_t *spa, vdev_t *vd, struct range_tree *tree,
 	 * correct io_private (not the dkioc_free_list_t, which is needed
 	 * by the underlying DKIOCFREE ioctl).
 	 */
-	zio_t *sub_pio = zio_root(spa, done, private, flags);
+	zio_t *sub_pio = zio_null(pio, spa, vd, done, private, flags);
 
 	ASSERT(range_tree_space(tree) != 0);
 
@@ -1112,7 +1111,7 @@ zio_trim(spa_t *spa, vdev_t *vd, struct range_tree *tree,
 		dfl->dfl_exts[rs_idx].dfle_start = rs->rs_start;
 		dfl->dfl_exts[rs_idx].dfle_length = len;
 
-		// check we're a multiple of the vdev ashift
+		/* check we're a multiple of the vdev ashift */
 		ASSERT0(dfl->dfl_exts[rs_idx].dfle_start &
 		    ((1 << vd->vdev_ashift) - 1));
 		ASSERT0(dfl->dfl_exts[rs_idx].dfle_length &

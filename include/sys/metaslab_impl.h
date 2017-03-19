@@ -325,6 +325,7 @@ struct metaslab {
 
 	range_tree_t	*ms_alloctree[TXG_SIZE];
 	range_tree_t	*ms_tree;
+
 	metaslab_trimset_t *ms_cur_ts;	/* currently prepared trims */
 	metaslab_trimset_t *ms_prev_ts;	/* previous (aging) trims */
 	kcondvar_t	ms_trim_cv;
@@ -340,6 +341,7 @@ struct metaslab {
 	range_tree_t	*ms_defertree[TXG_DEFER_SIZE];
 
 	boolean_t	ms_condensing;	/* condensing? */
+	kcondvar_t	ms_condensing_cv;
 	boolean_t	ms_condense_wanted;
 
 	/*

@@ -1703,6 +1703,23 @@ vdev_dirty(vdev_t *vd, int flags, void *arg, uint64_t txg)
 	(void) txg_list_add(&vd->vdev_spa->spa_vdev_txg_list, vd, txg);
 }
 
+boolean_t
+vdev_is_dirty(vdev_t *vd, int flags, void *arg)
+{
+	ASSERT(vd == vd->vdev_top);
+	ASSERT(!vd->vdev_ishole);
+	ASSERT(ISP2(flags));
+	ASSERT(spa_writeable(vd->vdev_spa));
+	ASSERT3U(flags, ==, VDD_METASLAB);
+
+	for (uint64_t txg = 0; txg < TXG_SIZE; txg++) {
+		if (txg_list_member(&vd->vdev_ms_list, arg, txg))
+			return (B_TRUE);
+	}
+
+	return (B_FALSE);
+}
+
 void
 vdev_dirty_leaves(vdev_t *vd, int flags, uint64_t txg)
 {
@@ -3702,21 +3719,36 @@ vdev_man_trim(vdev_trim_info_t *vti)
 	clock_t t = ddi_get_lbolt();
 	spa_t *spa = vti->vti_vdev->vdev_spa;
 	vdev_t *vd = vti->vti_vdev;
-	uint64_t i;
+	uint64_t cursor;
+	boolean_t was_loaded = B_FALSE;
 
 	vd->vdev_trim_prog = 0;
 
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
-	for (i = 0; i < vti->vti_vdev->vdev_ms_count &&
-	    !spa->spa_man_trim_stop; i++) {
+	ASSERT(vd->vdev_ms[0] != NULL);
+	cursor = vd->vdev_ms[0]->ms_start;
+	for (uint64_t i = 0; i < vti->vti_vdev->vdev_ms_count &&
+	    !spa->spa_man_trim_stop;) {
 		uint64_t delta;
 		metaslab_t *msp = vd->vdev_ms[i];
-		zio_t *trim_io = metaslab_trim_all(msp, &delta);
+		zio_t *trim_io;
 
-		atomic_add_64(&vd->vdev_trim_prog, msp->ms_size);
+		trim_io = metaslab_trim_all(msp, &cursor, &delta, &was_loaded);
 		spa_config_exit(spa, SCL_STATE_ALL, FTAG);
 
-		(void) zio_wait(trim_io);
+		if (trim_io != NULL) {
+			vd->vdev_trim_prog = cursor;
+			(void) zio_wait(trim_io);
+		} else {
+			/*
+			 * If there was nothing more left to trim, that means
+			 * this metaslab is either done trimming, or we
+			 * couldn't load it, move to the next one.
+			 */
+			i++;
+			if (i < vti->vti_vdev->vdev_ms_count)
+				ASSERT3U(vd->vdev_ms[i]->ms_start, ==, cursor);
+		}
 
 		/* delay loop to handle fixed-rate trimming */
 		for (;;) {
@@ -3770,10 +3802,9 @@ vdev_auto_trim(vdev_trim_info_t *vti)
 	vdev_t *vd = vti->vti_vdev;
 	spa_t *spa = vd->vdev_spa;
 	uint64_t txg = vti->vti_txg;
-	uint64_t i;
 
 	spa_config_enter(spa, SCL_STATE_ALL, FTAG, RW_READER);
-	for (i = 0; i < vd->vdev_ms_count; i++)
+	for (uint64_t i = 0; i < vd->vdev_ms_count; i++)
 		metaslab_auto_trim(vd->vdev_ms[i], txg);
 	spa_config_exit(spa, SCL_STATE_ALL, FTAG);
 

@@ -703,7 +703,6 @@ vdev_disk_io_start(zio_t *zio)
 
 		case DKIOCFREE:
 		{
-			int i;
 			dkioc_free_list_t *dfl;
 
 			/*
@@ -726,7 +725,7 @@ vdev_disk_io_start(zio_t *zio)
 			dfl = zio->io_private;
 			ASSERT(dfl != NULL);
 
-			for (i = 0; i < dfl->dfl_num_exts; i++) {
+			for (int i = 0; i < dfl->dfl_num_exts; i++) {
 				int error;
 
 				if (dfl->dfl_exts[i].dfle_length == 0)

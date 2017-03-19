@@ -7118,7 +7118,6 @@ extern void
 spa_man_trim(spa_t *spa, uint64_t rate)
 {
 	dmu_tx_t *time_update_tx;
-	uint64_t i;
 
 	mutex_enter(&spa->spa_man_trim_lock);
 
@@ -7141,7 +7140,7 @@ spa_man_trim(spa_t *spa, uint64_t rate)
 
 	spa_event_notify(spa, NULL, ESC_ZFS_TRIM_START);
 	spa_config_enter(spa, SCL_CONFIG, FTAG, RW_READER);
-	for (i = 0; i < spa->spa_root_vdev->vdev_children; i++) {
+	for (uint64_t i = 0; i < spa->spa_root_vdev->vdev_children; i++) {
 		vdev_t *vd = spa->spa_root_vdev->vdev_child[i];
 		vdev_trim_info_t *vti = kmem_zalloc(sizeof (*vti), KM_SLEEP);
 		vti->vti_vdev = vd;
@@ -7219,12 +7218,11 @@ spa_get_trim_prog(spa_t *spa, uint64_t *prog, uint64_t *rate,
 {
 	uint64_t total = 0;
 	vdev_t *root_vd = spa->spa_root_vdev;
-	uint64_t i;
 
 	ASSERT(spa_config_held(spa, SCL_CONFIG, RW_READER));
 	mutex_enter(&spa->spa_man_trim_lock);
 	if (spa->spa_num_man_trimming > 0) {
-		for (i = 0; i < root_vd->vdev_children; i++) {
+		for (uint64_t i = 0; i < root_vd->vdev_children; i++) {
 			total += root_vd->vdev_child[i]->vdev_trim_prog;
 		}
 	}

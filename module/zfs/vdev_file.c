@@ -230,11 +230,10 @@ vdev_file_io_start(zio_t *zio)
 
 		case DKIOCFREE:
 		{
-			int i;
 			dkioc_free_list_t *dfl = zio->io_private;
 
 			ASSERT(dfl != NULL);
-			for (i = 0; i < dfl->dfl_num_exts; i++) {
+			for (int i = 0; i < dfl->dfl_num_exts; i++) {
 				struct flock flck;
 				int error;
 

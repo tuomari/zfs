@@ -352,6 +352,7 @@ extern int vdev_dtl_load(vdev_t *vd);
 extern void vdev_sync(vdev_t *vd, uint64_t txg);
 extern void vdev_sync_done(vdev_t *vd, uint64_t txg);
 extern void vdev_dirty(vdev_t *vd, int flags, void *arg, uint64_t txg);
+extern boolean_t vdev_is_dirty(vdev_t *vd, int flags, void *arg);
 extern void vdev_dirty_leaves(vdev_t *vd, int flags, uint64_t txg);
 
 /*
