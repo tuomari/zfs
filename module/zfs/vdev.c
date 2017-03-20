@@ -78,7 +78,7 @@ static vdev_ops_t *vdev_ops_table[] = {
  * 2%). If we exceed this limit, we start throwing out new extents
  * without queueing them.
  */
-uint64_t zfs_trim_mem_lim_fact = 50;
+int zfs_trim_mem_lim_fact = 50;
 
 /*
  * Given a vdev type, return the appropriate ops vector.
@@ -3911,5 +3911,9 @@ module_param(metaslabs_per_vdev, int, 0644);
 MODULE_PARM_DESC(metaslabs_per_vdev,
 	"Divide added vdev into approximately (but no more than) this number "
 	"of metaslabs");
+
+module_param(zfs_trim_mem_lim_fact, int, 0644);
+MODULE_PARM_DESC(metaslabs_per_vdev, "Maximum percentage of physical memory "
+	"to be used for storing trim extents");
 /* END CSTYLED */
 #endif
